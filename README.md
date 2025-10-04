@@ -1,98 +1,55 @@
-# Vinw - Minimal File Watcher TUI
+# <div align="center">vinw</div>
 
-Ultra-minimal file tree watcher with real-time change detection. Built with the Vinay philosophy: simple, functional, no overengineering.
+<div align="center">
+
+[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Bubble Tea](https://img.shields.io/badge/Bubble%20Tea-TUI-FF6B9D?style=flat)](https://github.com/charmbracelet/bubbletea)
+[![GitHub CLI](https://img.shields.io/badge/GitHub%20CLI-Required-181717?style=flat&logo=github)](https://cli.github.com/)
+
+</div>
+
+A file tree viewer that tracks git changes in real-time.
 
 ## Features
 
-- 🌳 **Nested directory tree** - Automatic recursive display
-- ✱ **Star indicator** - Green highlighting for modified files
-- 📜 **Scrollable viewport** - Handle large directories with ease
-- 🖱️ **Mouse support** - Scroll with mouse wheel
-- 🎨 **Colored header/footer** - Info at top, controls at bottom
-- 🖥️ **Fullscreen mode** - Clean, immersive interface
-- ⏱️ **5-second refresh** - Auto-scan for changes
-- 🚀 **202 lines total** - Minimal, readable code
+- Real-time git diff tracking with line count indicators
+- GitHub repository creation from the command line
+- Gitignore toggle to show/hide ignored files
+- Smooth scrolling for large repositories
+- Automatic detection of broken remote repositories
+
+## Installation
+
+```bash
+go build -o vinw
+```
 
 ## Usage
 
 ```bash
-# Watch current directory
-go run main.go
-
-# Watch specific directory
-go run main.go /path/to/project
-
-# Build and run binary
-go build -o vinw
+# View current directory
 ./vinw
+
+# View specific directory
+./vinw /path/to/directory
 ```
 
-## Keybindings
+## Controls
 
-- `↑/↓` or `k/j` - Scroll up/down
-- Mouse wheel - Scroll
-- `q` or `ctrl+c` - Quit
+- `↑/↓` - Scroll through the file tree
+- `i` - Toggle gitignore (show/hide ignored files)
+- `q` - Quit
+
+## Requirements
+
+- Go 1.21+
+- GitHub CLI (for repository creation)
+- Git
 
 ## How It Works
 
-Uses lipgloss tree's **fluent API** for elegant recursive tree building:
+vinw displays a file tree with git diff information, showing `(+N)` next to files with uncommitted changes. The tree updates every 5 seconds to reflect new changes.
 
-```go
-tree.Root("project").
-    Child(
-        "file1.go",
-        "file2.go",
-        tree.Root("subdir").Child("nested.go")
-    )
-```
+When run in a directory without a git repository, vinw offers to create a GitHub repository using the GitHub CLI. It supports multiple GitHub accounts and organizations.
 
-Every 5 seconds:
-1. Recursively rebuild tree
-2. Check modification times vs. last scan
-3. Render changed files with ✱ in green
-4. Update display
-
-## Example Output
-
-```
-┌─────────────────────────────────────────────────┐
-│ Vinw - Watching: app | Changed: 1              │ (colored header)
-├─────────────────────────────────────────────────┤
-│                                                 │
-│ app                                             │
-│ ├── ✱ main.go         (green)                  │
-│ ├── go.mod                                      │
-│ ├── go.sum                                      │
-│ └── README.md                                   │ (scrollable)
-│                                                 │
-│ (scroll for more...)                            │
-│                                                 │
-├─────────────────────────────────────────────────┤
-│ Last scan: 14:23:45 | ↑/↓: scroll | q: quit    │ (footer)
-└─────────────────────────────────────────────────┘
-```
-
-## Architecture
-
-- **viewport.Model** - Scrollable container from Bubbles
-- **Colored header** - Info panel with background color
-- **Footer bar** - Controls and status
-- **Ready pattern** - Wait for WindowSizeMsg before viewport init
-- **Fluent tree API** - Elegant recursive nesting
-- **tea.WithAltScreen()** - Fullscreen in one line
-- **tea.WithMouseCellMotion()** - Mouse wheel support
-
-## Dependencies
-
-- [Bubbletea](https://github.com/charmbracelet/bubbletea) - TUI framework
-- [Bubbles](https://github.com/charmbracelet/bubbles) - Viewport component
-- [Lipgloss](https://github.com/charmbracelet/lipgloss) - Styling & tree component
-
-## Philosophy
-
-Built following Vinay's toolsh approach:
-- ✅ Minimal - Only essential features
-- ✅ Functional - Does one thing well
-- ✅ Beautiful - Looks cool as shit
-- ✅ Simple - ~200 lines, easy to understand
-- ✅ Efficient - Smart use of Charm components
+If a local repository's remote has been deleted, vinw detects this and offers to create a new remote repository while preserving local commits.

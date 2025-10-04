@@ -3005,5 +3005,17 @@
     "tool_input": {
       "file_path": "/Users/williamvansickleiii/charmtuitemplate/vinw/app/README.md"
     }
+  },
+  {
+    "session_id": "56481fba-5b4e-4e0d-ba1c-2b2cc63b9830",
+    "transcript_path": "/Users/williamvansickleiii/.claude/projects/-Users-williamvansickleiii-charmtuitemplate-vinw/56481fba-5b4e-4e0d-ba1c-2b2cc63b9830.jsonl",
+    "cwd": "/Users/williamvansickleiii/charmtuitemplate/vinw/app",
+    "permission_mode": "acceptEdits",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_input": {
+      "file_path": "/Users/williamvansickleiii/charmtuitemplate/vinw/app/README.md",
+      "content": "# <div align=\"center\">vinw</div>\n\n<div align=\"center\">\n\n[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)\n[![Bubble Tea](https://img.shields.io/badge/Bubble%20Tea-TUI-FF6B9D?style=flat)](https://github.com/charmbracelet/bubbletea)\n[![GitHub CLI](https://img.shields.io/badge/GitHub%20CLI-Required-181717?style=flat&logo=github)](https://cli.github.com/)\n\n</div>\n\nA file tree viewer that tracks git changes in real-time.\n\n## Features\n\n- Real-time git diff tracking with line count indicators\n- GitHub repository creation from the command line\n- Gitignore toggle to show/hide ignored files\n- Smooth scrolling for large repositories\n- Automatic detection of broken remote repositories\n\n## Installation\n\n```bash\ngo build -o vinw\n```\n\n## Usage\n\n```bash\n# View current directory\n./vinw\n\n# View specific directory\n./vinw /path/to/directory\n```\n\n## Controls\n\n- `\u2191/\u2193` - Scroll through the file tree\n- `i` - Toggle gitignore (show/hide ignored files)\n- `q` - Quit\n\n## Requirements\n\n- Go 1.21+\n- GitHub CLI (for repository creation)\n- Git\n\n## How It Works\n\nvinw displays a file tree with git diff information, showing `(+N)` next to files with uncommitted changes. The tree updates every 5 seconds to reflect new changes.\n\nWhen run in a directory without a git repository, vinw offers to create a GitHub repository using the GitHub CLI. It supports multiple GitHub accounts and organizations.\n\nIf a local repository's remote has been deleted, vinw detects this and offers to create a new remote repository while preserving local commits."
+    }
   }
 ]
