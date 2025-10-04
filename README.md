@@ -1,24 +1,43 @@
-# vinw
+# <div align="center">vinw</div>
 
-A fast, interactive file tree viewer with real-time git change tracking and file preview.
+<div align="center">
+
+[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Bubble Tea](https://img.shields.io/badge/Bubble%20Tea-TUI-FF6B9D?style=flat)](https://github.com/charmbracelet/bubbletea)
+[![Glamour](https://img.shields.io/badge/Glamour-Markdown-9966CC?style=flat)](https://github.com/charmbracelet/glamour)
+[![Homebrew](https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat&logo=homebrew)](https://brew.sh/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=flat)](LICENSE)
+
+**A fast, interactive file tree viewer with real-time git change tracking and syntax highlighting**
+
+![Demo](demo.png)
+
+</div>
 
 ## Features
 
-- Live git change tracking (staged and unstaged)
-- File preview in separate terminal window
-- Interactive file navigation with keyboard
-- Gitignore toggle to show/hide ignored files
-- GitHub repository creation and management
-- Optimized for large repositories
+- Real-time git change tracking (staged, unstaged, untracked)
+- Dual-terminal file preview with syntax highlighting
+- Markdown rendering with Glamour
+- Vim-style navigation (j/k)
+- Toggle gitignore with 'i'
+- Fast performance for large repos
+- GitHub repository management
 
 ## Installation
 
-### Quick Install
+### Homebrew (Recommended)
+```bash
+brew tap willyv3/tap
+brew install vinw
+```
+
+### Build from Source
 ```bash
 make install
 ```
 
-### Manual Install
+### Manual Build
 ```bash
 go build -o vinw
 cd viewer && go build -o vinw-viewer

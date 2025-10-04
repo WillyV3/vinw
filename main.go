@@ -231,8 +231,17 @@ func (m model) View() string {
 	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
 }
 
+func shortenPath(path string) string {
+	home := os.Getenv("HOME")
+	if home != "" && strings.HasPrefix(path, home) {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
+}
+
 func (m model) headerView() string {
-	title := fmt.Sprintf("Vinw - %s", m.rootPath)
+	shortPath := shortenPath(m.rootPath)
+	title := fmt.Sprintf("Vinw - %s", shortPath)
 	return headerStyle.Width(m.width).Render(title)
 }
 
