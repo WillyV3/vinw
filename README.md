@@ -17,20 +17,21 @@
 
 ## Features
 
-- Real-time git change tracking (staged, unstaged, untracked)
-- Dual-terminal file preview with syntax highlighting
-- Markdown rendering with Glamour
-- Vim-style navigation (j/k)
-- Toggle gitignore with 'i'
-- Fast performance for large repos
-- GitHub repository management
+- **Real-time git change tracking** - Shows staged, unstaged, and untracked files
+- **Dual-terminal preview** - Separate viewer with syntax highlighting and markdown rendering
+- **Session isolation** - Run multiple instances in different directories simultaneously
+- **8 color themes** - Synchronized between tree and viewer
+- **Mouse toggle** - Switch between scrolling and text selection modes
+- **Vim-style navigation** - j/k keys for file tree navigation
+- **Gitignore support** - Toggle with 'i' key
+- **Fast performance** - Optimized for large repositories
+- **GitHub integration** - Automatic repository management
 
 ## Installation
 
 ### Homebrew (Recommended)
 ```bash
-brew tap willyv3/tap
-brew install vinw
+brew install willyv3/tap/vinw
 ```
 
 ### Build from Source
@@ -58,9 +59,9 @@ vinw              # Current directory
 vinw /path/to/dir # Specific directory
 ```
 
-Start viewer in another terminal:
+vinw will display a session ID. Use it to start the viewer in another terminal:
 ```bash
-vinw-viewer
+vinw-viewer <session-id>
 ```
 
 ## Controls
@@ -69,10 +70,14 @@ vinw-viewer
 - `j/k` or `↑/↓` - Navigate files
 - `Enter` - Select file for viewing
 - `i` - Toggle gitignore filter
+- `t/T` - Cycle themes
+- `v` - Show viewer command
+- `?` - Help menu
 - `q` - Quit
 
 ### File Viewer (vinw-viewer)
-- `↑/↓` - Scroll content
+- `↑/↓` or mouse - Scroll content
+- `m` - Toggle mouse mode (scroll/select for copying)
 - `r` - Manual refresh
 - `q` - Quit
 
