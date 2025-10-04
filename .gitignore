@@ -1,6 +1,6 @@
 # Ignored directories
-unused/
 logs/
+unused/
 
 # Test files
 *.test

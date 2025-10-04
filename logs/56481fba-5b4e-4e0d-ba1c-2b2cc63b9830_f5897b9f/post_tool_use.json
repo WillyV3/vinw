@@ -8509,5 +8509,43 @@
         }
       ]
     }
+  },
+  {
+    "session_id": "56481fba-5b4e-4e0d-ba1c-2b2cc63b9830",
+    "transcript_path": "/Users/williamvansickleiii/.claude/projects/-Users-williamvansickleiii-charmtuitemplate-vinw/56481fba-5b4e-4e0d-ba1c-2b2cc63b9830.jsonl",
+    "cwd": "/Users/williamvansickleiii/charmtuitemplate/vinw/app",
+    "permission_mode": "acceptEdits",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "/Users/williamvansickleiii/charmtuitemplate/vinw/app/.gitignore",
+      "old_string": "# Ignored directories\nunused/\nlogs/\n\n# Test files\n*.test\n*.out\n\n# Temporary files\n*.tmp\n*.temp\n\n# Binaries\n*.exe\n*.dll\n*.so\n*.dylib",
+      "new_string": "# Ignored directories\nlogs/\nunused/\n\n# Test files\n*.test\n*.out\n\n# Temporary files\n*.tmp\n*.temp\n\n# Binaries\n*.exe\n*.dll\n*.so\n*.dylib"
+    },
+    "tool_response": {
+      "filePath": "/Users/williamvansickleiii/charmtuitemplate/vinw/app/.gitignore",
+      "oldString": "# Ignored directories\nunused/\nlogs/\n\n# Test files\n*.test\n*.out\n\n# Temporary files\n*.tmp\n*.temp\n\n# Binaries\n*.exe\n*.dll\n*.so\n*.dylib",
+      "newString": "# Ignored directories\nlogs/\nunused/\n\n# Test files\n*.test\n*.out\n\n# Temporary files\n*.tmp\n*.temp\n\n# Binaries\n*.exe\n*.dll\n*.so\n*.dylib",
+      "originalFile": "# Ignored directories\nunused/\nlogs/\n\n# Test files\n*.test\n*.out\n\n# Temporary files\n*.tmp\n*.temp\n\n# Binaries\n*.exe\n*.dll\n*.so\n*.dylib",
+      "structuredPatch": [
+        {
+          "oldStart": 1,
+          "oldLines": 6,
+          "newStart": 1,
+          "newLines": 6,
+          "lines": [
+            " # Ignored directories",
+            "-unused/",
+            " logs/",
+            "+unused/",
+            " ",
+            " # Test files",
+            " *.test"
+          ]
+        }
+      ],
+      "userModified": false,
+      "replaceAll": false
+    }
   }
 ]
