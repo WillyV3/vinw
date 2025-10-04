@@ -57,7 +57,10 @@ type model struct {
 	selectedLine   int               // Currently selected line in viewport
 	fileMap        map[int]string    // Map of line number to file path
 	showHelp       bool              // Whether to show help
+	showViewer     bool              // Whether to show viewer command popup
+	showStartup    bool              // Whether to show startup message
 	theme          *internal.ThemeManager     // Theme manager
+	sessionID      string            // Unique session ID for this instance
 }
 
 // updateTreeCache updates the cached tree string and related values
@@ -105,6 +108,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// If startup message is showing, handle special keys
+		if m.showStartup {
+			switch msg.String() {
+			case "c":
+				// Copy viewer command to clipboard
+				viewerCmd := fmt.Sprintf("vinw-viewer %s", m.sessionID)
+				copyCmd := exec.Command("pbcopy")
+				copyCmd.Stdin = strings.NewReader(viewerCmd)
+				copyCmd.Run() // Ignore errors, not all systems have pbcopy
+				m.showStartup = false
+				return m, nil
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			default:
+				// Dismiss startup on any other key
+				m.showStartup = false
+				return m, nil
+			}
+		}
+
 		// If help is showing, any key dismisses it
 		if m.showHelp {
 			switch msg.String() {
@@ -119,9 +142,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// If viewer popup is showing, handle special keys
+		if m.showViewer {
+			switch msg.String() {
+			case "c":
+				// Copy viewer command to clipboard
+				viewerCmd := fmt.Sprintf("vinw-viewer %s", m.sessionID)
+				copyCmd := exec.Command("pbcopy")
+				copyCmd.Stdin = strings.NewReader(viewerCmd)
+				copyCmd.Run() // Ignore errors, not all systems have pbcopy
+				m.showViewer = false
+				return m, nil
+			case "v", "escape":
+				m.showViewer = false
+				return m, nil
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			default:
+				// Dismiss viewer popup on any other key
+				m.showViewer = false
+			}
+		}
+
 		switch msg.String() {
 		case "?":
 			m.showHelp = !m.showHelp
+			return m, nil
+		case "v":
+			m.showViewer = !m.showViewer
 			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -206,7 +254,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Make sure it's actually a file, not a directory
 				if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
 					// Write to Skate for viewer to pick up, silently ignore errors
-					cmd := exec.Command("skate", "set", "vinw-current-file", fullPath)
+					key := fmt.Sprintf("vinw-current-file@%s", m.sessionID)
+					cmd := exec.Command("skate", "set", key, fullPath)
 					cmd.Run() // Ignore errors silently
 				}
 			}
@@ -268,6 +317,64 @@ func (m model) View() string {
 		return "\n  Initializing..."
 	}
 
+	// Show startup message with viewer command
+	if m.showStartup {
+		startupText := fmt.Sprintf(`╭─────────────────────────────────────╮
+│         Welcome to vinw!            │
+╰─────────────────────────────────────╯
+
+Session ID: %s
+
+To open the viewer, run in another terminal:
+
+  vinw-viewer %s
+
+Press 'c' to copy command to clipboard
+Press any other key to continue...`, m.sessionID, m.sessionID)
+
+		startupStyle := lipgloss.NewStyle().
+			Padding(2, 4).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("62"))
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			startupStyle.Render(startupText),
+		)
+	}
+
+	// Show viewer popup
+	if m.showViewer {
+		viewerText := fmt.Sprintf(`╭─────────────────────────────────────╮
+│       Open Paired Viewer            │
+╰─────────────────────────────────────╯
+
+Run this command in another terminal:
+
+  vinw-viewer %s
+
+Session ID: %s
+
+Press 'c' to copy command to clipboard
+Press any other key to dismiss...`, m.sessionID, m.sessionID)
+
+		viewerStyle := lipgloss.NewStyle().
+			Padding(2, 4).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("42"))
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			viewerStyle.Render(viewerText),
+		)
+	}
+
 	if m.showHelp {
 		helpText := `╭─────────────────────────────────────╮
 │          vinw Help Guide            │
@@ -284,6 +391,7 @@ Navigation
   k, ↑          Move up
   Enter         Select file to view
   i             Toggle gitignore
+  v             Show viewer command
   ?             Toggle this help
   q             Quit
 
@@ -520,6 +628,24 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 	return t
 }
 
+// generateSessionID creates a unique session ID based on the current directory
+func generateSessionID(path string) string {
+	// Use absolute path to ensure consistency
+	absPath, _ := filepath.Abs(path)
+	// Create a short hash of the path
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("echo \"%s\" | shasum -a 256 | cut -c1-8", absPath))
+	output, err := cmd.Output()
+	if err != nil {
+		// Fallback to a simpler method if shasum fails
+		// Use last 8 chars of path as a simple ID
+		if len(absPath) > 8 {
+			return strings.ReplaceAll(absPath[len(absPath)-8:], "/", "_")
+		}
+		return "default"
+	}
+	return strings.TrimSpace(string(output))
+}
+
 func main() {
 	// Get watch path from args or use current directory
 	watchPath := "."
@@ -530,6 +656,31 @@ func main() {
 	// Get absolute path for everything
 	absPath, _ := filepath.Abs(watchPath)
 	watchPath = absPath  // Use absolute path everywhere
+
+	// Generate unique session ID for this directory
+	sessionID := generateSessionID(absPath)
+
+	// Build the viewer command
+	viewerCmd := fmt.Sprintf("vinw-viewer %s", sessionID)
+
+	// Print session info to terminal (copyable)
+	fmt.Printf("vinw session started\n")
+	fmt.Printf("Directory: %s\n", absPath)
+	fmt.Printf("Session ID: %s\n", sessionID)
+	fmt.Printf("\nTo open viewer, run this command in another terminal:\n")
+	fmt.Printf("%s\n", viewerCmd)
+
+	// Try to copy to clipboard
+	copyCmd := exec.Command("pbcopy")
+	copyCmd.Stdin = strings.NewReader(viewerCmd)
+	if err := copyCmd.Run(); err == nil {
+		fmt.Printf("\n✓ Command copied to clipboard! Just paste in a new terminal.\n")
+	}
+	fmt.Printf("\nStarting vinw...\n\n")
+
+	// Initialize theme manager with session ID FIRST
+	themeManager := internal.NewThemeManagerWithSession(sessionID)
+	themeManager.BroadcastTheme() // Broadcast initial theme to viewer
 
 	// Initialize GitHub repo if needed (only on first run for this directory)
 	if err := internal.InitGitHub(absPath); err != nil {
@@ -546,10 +697,6 @@ func main() {
 	respectIgnore := true
 	tree, fileMap := buildTreeWithMap(watchPath, initialDiffCache, gitignore, respectIgnore)
 
-	// Initialize theme manager
-	themeManager := internal.NewThemeManager()
-	themeManager.BroadcastTheme() // Broadcast initial theme to viewer
-
 	// Initialize model
 	m := model{
 		rootPath:      watchPath,
@@ -560,6 +707,8 @@ func main() {
 		selectedLine:  0,
 		fileMap:       fileMap,
 		theme:         themeManager,
+		sessionID:     sessionID,
+		showStartup:   true,  // Show startup screen until user presses a key
 	}
 
 	// Initialize the cache

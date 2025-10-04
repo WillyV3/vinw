@@ -22,7 +22,11 @@ import (
 // Styles
 var (
 	// titleStyle will be dynamically created based on theme
-	titleStyle lipgloss.Style
+	titleStyle = lipgloss.NewStyle().
+		Background(lipgloss.Color("30")).  // Default to Teal theme
+		Foreground(lipgloss.Color("230")).
+		Bold(true).
+		Padding(0, 1)
 
 	infoStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
@@ -47,12 +51,13 @@ type model struct {
 	ready       bool
 	width       int
 	height      int
+	sessionID   string // Session ID for Skate isolation
 }
 
 func (m model) Init() tea.Cmd {
 	// Start checking for file changes
 	return tea.Batch(
-		checkFile(),
+		m.checkFile(),
 		pollFile(),
 	)
 }
@@ -88,19 +93,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			// Manual refresh
-			return m, checkFile()
+			return m, m.checkFile()
 		}
 
 	case fileCheckMsg:
 		// Check for new file selection
 		return m, tea.Batch(
-			checkFile(),
+			m.checkFile(),
 			pollFile(), // Continue polling
 		)
 
 	case fileContentMsg:
-		// Update content if file changed
-		if msg.path != m.currentFile || msg.content != m.content {
+		// Only update if something actually changed
+		if msg.path == "" && msg.content == "" && m.currentFile != "" {
+			// This was an empty read but we have content - keep current state
+			return m, nil
+		}
+
+		// Check if this is the initial "no file" message
+		if msg.path == "" && m.currentFile == "" {
+			// First time, show the message
+			m.viewport.SetContent("No file selected.\n\nPress Enter in vinw to select a file to view.")
+			return m, nil
+		}
+
+		// Update content if file actually changed
+		if msg.path != m.currentFile || (msg.path != "" && msg.content != m.content) {
 			m.currentFile = msg.path
 			m.content = msg.content
 
@@ -154,19 +172,23 @@ func pollFile() tea.Cmd {
 	})
 }
 
-func checkFile() tea.Cmd {
+func (m model) checkFile() tea.Cmd {
 	return func() tea.Msg {
-		// Update theme from Skate
-		updateTheme()
+		// Update theme from Skate (doesn't affect file content)
+		updateThemeWithSession(m.sessionID)
 
-		filePath := getSelectedFile()
+		// Get current file from Skate
+		filePath := getSelectedFileWithSession(m.sessionID)
 		if filePath == "" {
+			// Don't immediately clear - might be a temporary Skate read issue
+			// The Update method will handle this appropriately
 			return fileContentMsg{
 				path:    "",
-				content: "No file selected.\n\nPress Enter in vinw to select a file to view.",
+				content: "",
 			}
 		}
 
+		// File exists, read it
 		content := readFileContent(filePath)
 		return fileContentMsg{
 			path:    filePath,
@@ -186,9 +208,9 @@ func updateTheme() {
 	fgBytes, _ := cmd.Output()
 	fg := strings.TrimSpace(string(fgBytes))
 
-	// Default if no theme set
+	// Default to first theme (Teal) if no theme set
 	if bg == "" {
-		bg = "62"
+		bg = "30"  // Teal from theme.go
 	}
 	if fg == "" {
 		fg = "230"
@@ -202,10 +224,58 @@ func updateTheme() {
 		Padding(0, 1)
 }
 
+// Track current theme to avoid unnecessary updates
+var (
+	currentBg = ""
+	currentFg = ""
+)
+
+// updateThemeWithSession updates the title style based on current theme with session
+func updateThemeWithSession(sessionID string) {
+	// Get theme colors from Skate with session
+	cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-bg@%s", sessionID))
+	bgBytes, _ := cmd.Output()
+	bg := strings.TrimSpace(string(bgBytes))
+
+	cmd = exec.Command("skate", "get", fmt.Sprintf("vinw-theme-fg@%s", sessionID))
+	fgBytes, _ := cmd.Output()
+	fg := strings.TrimSpace(string(fgBytes))
+
+	// Default to first theme (Teal) if no theme set
+	if bg == "" {
+		bg = "30"  // Teal from theme.go
+	}
+	if fg == "" {
+		fg = "230"
+	}
+
+	// Only update if theme actually changed
+	if bg != currentBg || fg != currentFg {
+		currentBg = bg
+		currentFg = fg
+
+		// Update title style with theme colors
+		titleStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color(bg)).
+			Foreground(lipgloss.Color(fg)).
+			Bold(true).
+			Padding(0, 1)
+	}
+}
+
 // Helper functions
 
 func getSelectedFile() string {
 	cmd := exec.Command("skate", "get", "vinw-current-file")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func getSelectedFileWithSession(sessionID string) string {
+	cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-current-file@%s", sessionID))
 	output, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -356,15 +426,25 @@ func addLineNumbers(content string) string {
 }
 
 func main() {
-	fmt.Println("Starting vinw viewer...")
+	// Get session ID from command line argument
+	var sessionID string
+	if len(os.Args) > 1 {
+		sessionID = os.Args[1]
+		fmt.Printf("Starting vinw viewer with session: %s\n", sessionID)
+	} else {
+		fmt.Println("Usage: vinw-viewer <session-id>")
+		fmt.Println("\nGet the session ID from the vinw instance you want to connect to.")
+		os.Exit(1)
+	}
+
 	fmt.Println("Waiting for file selection from vinw...")
 	fmt.Println()
 
-	// Initialize theme on startup
-	updateTheme()
+	// Initialize theme on startup with session
+	updateThemeWithSession(sessionID)
 
 	p := tea.NewProgram(
-		model{},
+		model{sessionID: sessionID},
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
