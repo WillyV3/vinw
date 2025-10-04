@@ -9,8 +9,7 @@ vinw-viewer
 viewer/vinw-viewer
 
 # Go dependencies
-go.sum
-viewer/go.sum
+# go.sum is needed for builds
 
 # Test files
 *.test
