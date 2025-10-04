@@ -1,10 +1,21 @@
 # Ignored directories
 logs/
 unused/
+dist/
+
+# Build artifacts
+vinw
+vinw-viewer
+viewer/vinw-viewer
+
+# Go dependencies
+go.sum
+viewer/go.sum
 
 # Test files
 *.test
 *.out
+coverage.out
 
 # Temporary files
 *.tmp
