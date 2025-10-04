@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/tree"
+	"vinw/internal"
 )
 
 // Styles
@@ -42,16 +43,29 @@ type tickMsg time.Time
 type model struct {
 	rootPath       string
 	tree           *tree.Tree
+	treeString     string            // Cached tree string
+	treeLines      []string          // Cached tree lines
+	maxLine        int               // Cached max line number
 	viewport       viewport.Model
 	ready          bool
 	width          int
 	height         int
 	diffCache      map[string]int    // Cache for git diff results
 	lastContent    string            // Track last content to avoid unnecessary updates
-	gitignore      *GitIgnore        // GitIgnore patterns
+	gitignore      *internal.GitIgnore        // GitIgnore patterns
 	respectIgnore  bool              // Whether to respect .gitignore
 	selectedLine   int               // Currently selected line in viewport
 	fileMap        map[int]string    // Map of line number to file path
+}
+
+// updateTreeCache updates the cached tree string and related values
+func (m *model) updateTreeCache() {
+	m.treeString = m.tree.String()
+	m.treeLines = strings.Split(m.treeString, "\n")
+	m.maxLine = len(m.treeLines) - 1
+	if m.maxLine < 0 {
+		m.maxLine = 0
+	}
 }
 
 func (m model) Init() tea.Cmd {
@@ -78,7 +92,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.YPosition = headerHeight
 			// Rebuild tree with initial settings
 			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
-			content := renderTreeWithSelection(m.tree.String(), m.selectedLine)
+			m.updateTreeCache()
+			content := renderTreeWithSelection(m.treeString, m.selectedLine)
 			m.viewport.SetContent(content)
 			m.lastContent = content
 			m.ready = true
@@ -103,6 +118,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Rebuild tree with new ignore setting
 			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+			m.updateTreeCache()
 
 			// Try to find the same file in the new map
 			newSelectedLine := 0
@@ -116,9 +132,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Ensure selected line is within bounds
-			maxLine := len(strings.Split(m.tree.String(), "\n")) - 1
-			if newSelectedLine > maxLine {
-				newSelectedLine = maxLine
+			if newSelectedLine > m.maxLine {
+				newSelectedLine = m.maxLine
 			}
 			if newSelectedLine < 0 {
 				newSelectedLine = 0
@@ -126,23 +141,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectedLine = newSelectedLine
 
 			// Update viewport with new selection
-			newContent := renderTreeWithSelection(m.tree.String(), m.selectedLine)
+			newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
 			m.viewport.SetContent(newContent)
 			m.lastContent = newContent
 			return m, nil
 		case "j", "down":
-			// Move selection down
-			// Count actual lines in the tree
-			treeLines := strings.Split(m.tree.String(), "\n")
-			maxLine := len(treeLines) - 1
-			if maxLine < 0 {
-				maxLine = 0
-			}
-
-			if m.selectedLine < maxLine {
+			// Move selection down using cached values
+			if m.selectedLine < m.maxLine {
 				m.selectedLine++
 				// Update viewport with highlighted line
-				content := renderTreeWithSelection(m.tree.String(), m.selectedLine)
+				content := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
 				m.viewport.SetContent(content)
 				// Auto-scroll if needed
 				if m.selectedLine >= m.viewport.YOffset+m.viewport.Height-1 {
@@ -151,11 +159,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "k", "up":
-			// Move selection up
+			// Move selection up using cached values
 			if m.selectedLine > 0 {
 				m.selectedLine--
 				// Update viewport with highlighted line
-				content := renderTreeWithSelection(m.tree.String(), m.selectedLine)
+				content := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
 				m.viewport.SetContent(content)
 				// Auto-scroll if needed
 				if m.selectedLine < m.viewport.YOffset {
@@ -170,12 +178,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 				// Make sure it's actually a file, not a directory
 				if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
-					// Write to Skate for viewer to pick up
+					// Write to Skate for viewer to pick up, silently ignore errors
 					cmd := exec.Command("skate", "set", "vinw-current-file", fullPath)
-					if err := cmd.Run(); err != nil {
-						// Show error if skate command fails
-						fmt.Printf("Error writing to skate: %v\n", err)
-					}
+					cmd.Run() // Ignore errors silently
 				}
 			}
 			// If it's a directory or not in map, do nothing (directories aren't selectable)
@@ -184,7 +189,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Update git diff cache efficiently with one call
-		m.diffCache = getAllGitDiffs()
+		m.diffCache = internal.GetAllGitDiffs()
 
 		// Remember the currently selected file if one exists
 		var currentFile string
@@ -194,6 +199,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Rebuild tree with cached diff data and gitignore settings
 		m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+		m.updateTreeCache()
 
 		// Try to maintain selection on the same file
 		if currentFile != "" {
@@ -206,16 +212,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Ensure selected line is within bounds
-		maxLine := len(strings.Split(m.tree.String(), "\n")) - 1
-		if m.selectedLine > maxLine {
-			m.selectedLine = maxLine
+		if m.selectedLine > m.maxLine {
+			m.selectedLine = m.maxLine
 		}
 		if m.selectedLine < 0 {
 			m.selectedLine = 0
 		}
 
 		// Only update viewport if content has changed
-		newContent := renderTreeWithSelection(m.tree.String(), m.selectedLine)
+		newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
 		if newContent != m.lastContent {
 			m.viewport.SetContent(newContent)
 			m.lastContent = newContent
@@ -278,12 +283,12 @@ func buildTreeWithCache(rootPath string, diffCache map[string]int) *tree.Tree {
 }
 
 // buildTreeWithOptions builds a file tree with all options
-func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) *tree.Tree {
+func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool) *tree.Tree {
 	return buildTreeRecursive(rootPath, "", diffCache, gitignore, respectIgnore)
 }
 
 // buildTreeWithMap builds tree and returns a map of line numbers to file paths
-func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) (*tree.Tree, map[int]string) {
+func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
 	lineNum := 1 // Start at 1 because the root directory takes line 0
 	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, &lineNum, fileMap)
@@ -301,8 +306,29 @@ func renderTreeWithSelection(content string, selectedLine int) string {
 	return strings.Join(lines, "\n")
 }
 
+// renderTreeWithSelectionOptimized works with cached lines for better performance
+func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
+	if len(lines) == 0 {
+		return ""
+	}
 
-func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool, lineNum *int, fileMap map[int]string) *tree.Tree {
+	if selectedLine < 0 || selectedLine >= len(lines) {
+		return strings.Join(lines, "\n")
+	}
+
+	// Make a copy to avoid modifying the cached lines
+	result := make([]string, len(lines))
+	copy(result, lines)
+
+	// Highlight selected line
+	highlightStyle := lipgloss.NewStyle().Reverse(true)
+	result[selectedLine] = highlightStyle.Render(lines[selectedLine])
+
+	return strings.Join(result, "\n")
+}
+
+
+func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, lineNum *int, fileMap map[int]string) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
@@ -364,7 +390,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 	return t
 }
 
-func buildTreeRecursive(path string, relativePath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) *tree.Tree {
+func buildTreeRecursive(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
@@ -397,13 +423,10 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 			subTree := buildTreeRecursive(fullPath, relPath, diffCache, gitignore, respectIgnore)
 			t.Child(subTree)
 		} else {
-			// Get git diff lines from cache or fall back to individual call
+			// Get git diff lines from cache
 			var diffLines int
 			if diffCache != nil {
 				diffLines = diffCache[relPath]
-			} else {
-				// Fallback for initial load or when cache isn't available
-				diffLines = getGitDiffLines(fullPath)
 			}
 
 			// Normal style for filename
@@ -435,32 +458,35 @@ func main() {
 	watchPath = absPath  // Use absolute path everywhere
 
 	// Initialize GitHub repo if needed (only on first run for this directory)
-	if err := initGitHub(absPath); err != nil {
+	if err := internal.InitGitHub(absPath); err != nil {
 		fmt.Printf("Error: %v\n", err)
 	}
 
 	// Load gitignore
-	gitignore := NewGitIgnore(watchPath)
+	gitignore := internal.NewGitIgnore(watchPath)
 
 	// Get initial git diff cache
-	initialDiffCache := getAllGitDiffs()
+	initialDiffCache := internal.GetAllGitDiffs()
 
 	// Build initial tree with gitignore support (default: ON)
 	respectIgnore := true
 	tree, fileMap := buildTreeWithMap(watchPath, initialDiffCache, gitignore, respectIgnore)
-	initialContent := renderTreeWithSelection(tree.String(), 0)
 
 	// Initialize model
 	m := model{
 		rootPath:      watchPath,
 		tree:          tree,
 		diffCache:     initialDiffCache,
-		lastContent:   initialContent,
 		gitignore:     gitignore,
 		respectIgnore: respectIgnore,
 		selectedLine:  0,
 		fileMap:       fileMap,
 	}
+
+	// Initialize the cache
+	m.updateTreeCache()
+	initialContent := renderTreeWithSelectionOptimized(m.treeLines, 0)
+	m.lastContent = initialContent
 
 	// Run with fullscreen and mouse support
 	p := tea.NewProgram(

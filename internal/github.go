@@ -1,4 +1,4 @@
-package main
+package internal
 
 import (
 	"bufio"
@@ -40,9 +40,9 @@ func countFileLines(filePath string) int {
 	return lineCount
 }
 
-// getAllGitDiffs returns a map of file paths to lines added for all changed files
+// GetAllGitDiffs returns a map of file paths to lines added for all changed files
 // This is much more efficient than calling git diff for each file
-func getAllGitDiffs() map[string]int {
+func GetAllGitDiffs() map[string]int {
 	diffs := make(map[string]int)
 
 	// Get unstaged changes
@@ -106,8 +106,8 @@ func getAllGitDiffs() map[string]int {
 	return diffs
 }
 
-// initGitHub checks for git repo and offers to create one if needed
-func initGitHub(path string) error {
+// InitGitHub checks for git repo and offers to create one if needed
+func InitGitHub(path string) error {
 	// Check if we're in a git repo
 	if isInGitRepo() {
 		// Check if remote exists and is accessible
