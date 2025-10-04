@@ -56,6 +56,8 @@ type model struct {
 	respectIgnore  bool              // Whether to respect .gitignore
 	selectedLine   int               // Currently selected line in viewport
 	fileMap        map[int]string    // Map of line number to file path
+	showHelp       bool              // Whether to show help
+	theme          *internal.ThemeManager     // Theme manager
 }
 
 // updateTreeCache updates the cached tree string and related values
@@ -103,9 +105,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// If help is showing, any key dismisses it
+		if m.showHelp {
+			switch msg.String() {
+			case "?":
+				m.showHelp = false
+				return m, nil
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			default:
+				// Dismiss help on any other key
+				m.showHelp = false
+			}
+		}
+
 		switch msg.String() {
+		case "?":
+			m.showHelp = !m.showHelp
+			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "t":
+			// Next theme
+			m.theme.NextTheme()
+			return m, nil
+		case "T":
+			// Previous theme
+			m.theme.PreviousTheme()
+			return m, nil
 		case "i":
 			// Toggle gitignore respect
 			m.respectIgnore = !m.respectIgnore
@@ -240,6 +267,48 @@ func (m model) View() string {
 	if !m.ready {
 		return "\n  Initializing..."
 	}
+
+	if m.showHelp {
+		helpText := `╭─────────────────────────────────────╮
+│          vinw Help Guide            │
+╰─────────────────────────────────────╯
+
+Setup
+─────
+  Terminal 1    vinw
+  Terminal 2    vinw-viewer
+
+Navigation
+──────────
+  j, ↓          Move down
+  k, ↑          Move up
+  Enter         Select file to view
+  i             Toggle gitignore
+  ?             Toggle this help
+  q             Quit
+
+Git Features
+────────────
+  • Shows uncommitted changes (+N)
+  • Works without remote repos
+  • Auto-creates GitHub repos
+
+Press any key to dismiss...`
+
+		helpStyle := lipgloss.NewStyle().
+			Padding(2, 4).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("62"))
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			helpStyle.Render(helpText),
+		)
+	}
+
 	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
 }
 
@@ -254,7 +323,9 @@ func shortenPath(path string) string {
 func (m model) headerView() string {
 	shortPath := shortenPath(m.rootPath)
 	title := fmt.Sprintf("Vinw - %s", shortPath)
-	return headerStyle.Width(m.width).Render(title)
+	// Use theme colors for header
+	themedHeaderStyle := m.theme.CreateHeaderStyle()
+	return themedHeaderStyle.Width(m.width).Render(title)
 }
 
 func (m model) footerView() string {
@@ -262,7 +333,10 @@ func (m model) footerView() string {
 	if m.respectIgnore {
 		ignoreStatus = "ON"
 	}
-	info := fmt.Sprintf("↑/↓: scroll | i: gitignore [%s] | q: quit", ignoreStatus)
+	// Two lines for skinny layout
+	line1 := fmt.Sprintf("j/k: nav | i: git [%s] | t/T: theme [%s]", ignoreStatus, m.theme.Current.Name)
+	line2 := "enter: select | ?: help | q: quit"
+	info := line1 + "\n" + line2
 	return footerStyle.Width(m.width).Render(info)
 }
 
@@ -472,6 +546,10 @@ func main() {
 	respectIgnore := true
 	tree, fileMap := buildTreeWithMap(watchPath, initialDiffCache, gitignore, respectIgnore)
 
+	// Initialize theme manager
+	themeManager := internal.NewThemeManager()
+	themeManager.BroadcastTheme() // Broadcast initial theme to viewer
+
 	// Initialize model
 	m := model{
 		rootPath:      watchPath,
@@ -481,6 +559,7 @@ func main() {
 		respectIgnore: respectIgnore,
 		selectedLine:  0,
 		fileMap:       fileMap,
+		theme:         themeManager,
 	}
 
 	// Initialize the cache

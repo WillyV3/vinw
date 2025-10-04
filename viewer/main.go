@@ -21,11 +21,8 @@ import (
 
 // Styles
 var (
-	titleStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
-			Foreground(lipgloss.Color("230")).
-			Bold(true).
-			Padding(0, 1)
+	// titleStyle will be dynamically created based on theme
+	titleStyle lipgloss.Style
 
 	infoStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
@@ -159,6 +156,9 @@ func pollFile() tea.Cmd {
 
 func checkFile() tea.Cmd {
 	return func() tea.Msg {
+		// Update theme from Skate
+		updateTheme()
+
 		filePath := getSelectedFile()
 		if filePath == "" {
 			return fileContentMsg{
@@ -173,6 +173,33 @@ func checkFile() tea.Cmd {
 			content: content,
 		}
 	}
+}
+
+// updateTheme updates the title style based on current theme
+func updateTheme() {
+	// Get theme colors from Skate
+	cmd := exec.Command("skate", "get", "vinw-theme-bg")
+	bgBytes, _ := cmd.Output()
+	bg := strings.TrimSpace(string(bgBytes))
+
+	cmd = exec.Command("skate", "get", "vinw-theme-fg")
+	fgBytes, _ := cmd.Output()
+	fg := strings.TrimSpace(string(fgBytes))
+
+	// Default if no theme set
+	if bg == "" {
+		bg = "62"
+	}
+	if fg == "" {
+		fg = "230"
+	}
+
+	// Update title style with theme colors
+	titleStyle = lipgloss.NewStyle().
+		Background(lipgloss.Color(bg)).
+		Foreground(lipgloss.Color(fg)).
+		Bold(true).
+		Padding(0, 1)
 }
 
 // Helper functions
@@ -332,6 +359,9 @@ func main() {
 	fmt.Println("Starting vinw viewer...")
 	fmt.Println("Waiting for file selection from vinw...")
 	fmt.Println()
+
+	// Initialize theme on startup
+	updateTheme()
 
 	p := tea.NewProgram(
 		model{},
