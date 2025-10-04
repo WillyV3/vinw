@@ -2994,5 +2994,16 @@
       "command": "ls -la .git/ | head -5",
       "description": "Check if .git is a real repo"
     }
+  },
+  {
+    "session_id": "56481fba-5b4e-4e0d-ba1c-2b2cc63b9830",
+    "transcript_path": "/Users/williamvansickleiii/.claude/projects/-Users-williamvansickleiii-charmtuitemplate-vinw/56481fba-5b4e-4e0d-ba1c-2b2cc63b9830.jsonl",
+    "cwd": "/Users/williamvansickleiii/charmtuitemplate/vinw/app",
+    "permission_mode": "acceptEdits",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Read",
+    "tool_input": {
+      "file_path": "/Users/williamvansickleiii/charmtuitemplate/vinw/app/README.md"
+    }
   }
 ]
