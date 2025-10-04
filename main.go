@@ -132,7 +132,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "j", "down":
 			// Move selection down
-			if m.selectedLine < len(m.fileMap)-1 {
+			// Count actual lines in the tree
+			treeLines := strings.Split(m.tree.String(), "\n")
+			maxLine := len(treeLines) - 1
+			if maxLine < 0 {
+				maxLine = 0
+			}
+
+			if m.selectedLine < maxLine {
 				m.selectedLine++
 				// Update viewport with highlighted line
 				content := renderTreeWithSelection(m.tree.String(), m.selectedLine)
