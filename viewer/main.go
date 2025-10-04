@@ -45,13 +45,14 @@ type fileContentMsg struct {
 
 // Model
 type model struct {
-	viewport    viewport.Model
-	currentFile string
-	content     string
-	ready       bool
-	width       int
-	height      int
-	sessionID   string // Session ID for Skate isolation
+	viewport     viewport.Model
+	currentFile  string
+	content      string
+	ready        bool
+	width        int
+	height       int
+	sessionID    string // Session ID for Skate isolation
+	mouseEnabled bool   // Toggle for mouse mode
 }
 
 func (m model) Init() tea.Cmd {
@@ -94,6 +95,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			// Manual refresh
 			return m, m.checkFile()
+		case "m":
+			// Toggle mouse mode
+			m.mouseEnabled = !m.mouseEnabled
+			if m.mouseEnabled {
+				return m, tea.EnableMouseCellMotion
+			}
+			return m, tea.DisableMouse
 		}
 
 	case fileCheckMsg:
@@ -156,10 +164,18 @@ func (m model) headerView() string {
 func (m model) footerView() string {
 	scrollPercent := fmt.Sprintf("%3.f%%", m.viewport.ScrollPercent()*100)
 
-	info := fmt.Sprintf("Line %d/%d • %s • q: quit • r: refresh",
+	mouseStatus := "scroll"
+	if !m.mouseEnabled {
+		mouseStatus = "select/copy"
+	}
+
+	// Two lines for skinny layout
+	line1 := fmt.Sprintf("Line %d/%d • %s",
 		m.viewport.YOffset+1,
 		m.viewport.TotalLineCount(),
 		scrollPercent)
+	line2 := fmt.Sprintf("m: mouse [%s] • r: refresh • q: quit", mouseStatus)
+	info := line1 + "\n" + line2
 
 	return infoStyle.Width(m.width).Render(info)
 }
@@ -444,7 +460,10 @@ func main() {
 	updateThemeWithSession(sessionID)
 
 	p := tea.NewProgram(
-		model{sessionID: sessionID},
+		model{
+			sessionID:    sessionID,
+			mouseEnabled: true, // Start with mouse enabled for scrolling
+		},
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
