@@ -10,7 +10,8 @@
 
 **A fast, interactive file tree viewer with real-time git change tracking and syntax highlighting**
 
-![Demo](demo.png)
+![Demo]<img width="1512" height="953" alt="Screenshot 2025-10-04 at 9 43 27 AM" src="https://github.com/user-attachments/assets/990922f7-0363-4f3a-8f35-7977e2fff8c9" />
+
 
 </div>
 
