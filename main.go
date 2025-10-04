@@ -94,12 +94,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "i":
 			// Toggle gitignore respect
 			m.respectIgnore = !m.respectIgnore
-			// Rebuild tree with new ignore setting - force update
+
+			// Remember the currently selected file if one exists
+			var currentFile string
+			if f, ok := m.fileMap[m.selectedLine]; ok {
+				currentFile = f
+			}
+
+			// Rebuild tree with new ignore setting
 			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+
+			// Try to find the same file in the new map
+			newSelectedLine := 0
+			if currentFile != "" {
+				for line, file := range m.fileMap {
+					if file == currentFile {
+						newSelectedLine = line
+						break
+					}
+				}
+			}
+
+			// Ensure selected line is within bounds
+			maxLine := len(strings.Split(m.tree.String(), "\n")) - 1
+			if newSelectedLine > maxLine {
+				newSelectedLine = maxLine
+			}
+			if newSelectedLine < 0 {
+				newSelectedLine = 0
+			}
+			m.selectedLine = newSelectedLine
+
+			// Update viewport with new selection
 			newContent := renderTreeWithSelection(m.tree.String(), m.selectedLine)
 			m.viewport.SetContent(newContent)
 			m.lastContent = newContent
-			// Maintain scroll position if possible
 			return m, nil
 		case "j", "down":
 			// Move selection down
@@ -128,16 +157,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "enter":
-			// Get the file at the selected line
+			// Get the file at the selected line (only files are in the map, not directories)
 			if filePath, ok := m.fileMap[m.selectedLine]; ok {
 				fullPath := filepath.Join(m.rootPath, filePath)
-				// Write to Skate for server to pick up
-				cmd := exec.Command("skate", "set", "vinw-current-file", fullPath)
-				if err := cmd.Run(); err != nil {
-					// Debug: print error if any
-					fmt.Printf("Error writing to skate: %v\n", err)
+
+				// Make sure it's actually a file, not a directory
+				if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+					// Write to Skate for viewer to pick up
+					cmd := exec.Command("skate", "set", "vinw-current-file", fullPath)
+					if err := cmd.Run(); err != nil {
+						// Show error if skate command fails
+						fmt.Printf("Error writing to skate: %v\n", err)
+					}
 				}
 			}
+			// If it's a directory or not in map, do nothing (directories aren't selectable)
 			return m, nil
 		}
 
@@ -145,8 +179,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update git diff cache efficiently with one call
 		m.diffCache = getAllGitDiffs()
 
+		// Remember the currently selected file if one exists
+		var currentFile string
+		if f, ok := m.fileMap[m.selectedLine]; ok {
+			currentFile = f
+		}
+
 		// Rebuild tree with cached diff data and gitignore settings
 		m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+
+		// Try to maintain selection on the same file
+		if currentFile != "" {
+			for line, file := range m.fileMap {
+				if file == currentFile {
+					m.selectedLine = line
+					break
+				}
+			}
+		}
+
+		// Ensure selected line is within bounds
+		maxLine := len(strings.Split(m.tree.String(), "\n")) - 1
+		if m.selectedLine > maxLine {
+			m.selectedLine = maxLine
+		}
+		if m.selectedLine < 0 {
+			m.selectedLine = 0
+		}
 
 		// Only update viewport if content has changed
 		newContent := renderTreeWithSelection(m.tree.String(), m.selectedLine)
@@ -210,7 +269,7 @@ func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *
 // buildTreeWithMap builds tree and returns a map of line numbers to file paths
 func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
-	lineNum := 0
+	lineNum := 1 // Start at 1 because the root directory takes line 0
 	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, &lineNum, fileMap)
 	return t, fileMap
 }
@@ -230,11 +289,6 @@ func renderTreeWithSelection(content string, selectedLine int) string {
 func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool, lineNum *int, fileMap map[int]string) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
-
-	// Don't count the root directory line
-	if relativePath != "" {
-		*lineNum++ // Count the directory line itself
-	}
 
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -261,12 +315,13 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 		}
 
 		if entry.IsDir() {
+			// Count the directory line
+			*lineNum++
 			// Recursively build subtree
 			subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, lineNum, fileMap)
 			t.Child(subTree)
 		} else {
-			// Track file in map BEFORE incrementing line number
-			// The current line (*lineNum) is where this file appears
+			// Track file in map at current line number
 			fileMap[*lineNum] = relPath
 			*lineNum++
 

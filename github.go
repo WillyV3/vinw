@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -22,27 +24,82 @@ func getGitDiffLines(filePath string) int {
 	return 0
 }
 
+// countFileLines counts the number of lines in a file
+func countFileLines(filePath string) int {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineCount := 0
+	for scanner.Scan() {
+		lineCount++
+	}
+	return lineCount
+}
+
 // getAllGitDiffs returns a map of file paths to lines added for all changed files
 // This is much more efficient than calling git diff for each file
 func getAllGitDiffs() map[string]int {
 	diffs := make(map[string]int)
 
-	cmd := exec.Command("git", "diff", "--numstat", "HEAD")
+	// Get unstaged changes
+	cmd := exec.Command("git", "diff", "--numstat")
 	output, err := cmd.Output()
-	if err != nil {
-		return diffs
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				added, _ := strconv.Atoi(parts[0])
+				filepath := parts[2]
+				diffs[filepath] = added
+			}
+		}
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if line == "" {
-			continue
+	// Get staged changes (these add to unstaged if same file)
+	cmd = exec.Command("git", "diff", "--cached", "--numstat")
+	output, err = cmd.Output()
+	if err == nil {
+		lines := strings.Split(string(output), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				added, _ := strconv.Atoi(parts[0])
+				filepath := parts[2]
+				// Add to existing count if file has both staged and unstaged changes
+				if existing, ok := diffs[filepath]; ok {
+					diffs[filepath] = existing + added
+				} else {
+					diffs[filepath] = added
+				}
+			}
 		}
-		parts := strings.Fields(line)
-		if len(parts) >= 3 {
-			added, _ := strconv.Atoi(parts[0])
-			filepath := parts[2]
-			diffs[filepath] = added
+	}
+
+	// Get untracked files and count their lines
+	cmd = exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	output, err = cmd.Output()
+	if err == nil {
+		files := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, file := range files {
+			if file == "" {
+				continue
+			}
+			// Count all lines in untracked files
+			lineCount := countFileLines(file)
+			if lineCount > 0 {
+				diffs[file] = lineCount
+			}
 		}
 	}
 
