@@ -39,12 +39,16 @@ type tickMsg time.Time
 
 // Model
 type model struct {
-	rootPath string
-	tree     *tree.Tree
-	viewport viewport.Model
-	ready    bool
-	width    int
-	height   int
+	rootPath       string
+	tree           *tree.Tree
+	viewport       viewport.Model
+	ready          bool
+	width          int
+	height         int
+	diffCache      map[string]int // Cache for git diff results
+	lastContent    string         // Track last content to avoid unnecessary updates
+	gitignore      *GitIgnore     // GitIgnore patterns
+	respectIgnore  bool           // Whether to respect .gitignore
 }
 
 func (m model) Init() tea.Cmd {
@@ -69,9 +73,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargins)
 			m.viewport.YPosition = headerHeight
-			if m.tree != nil {
-				m.viewport.SetContent(m.tree.String())
-			}
+			// Rebuild tree with initial settings
+			m.tree = buildTreeWithOptions(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+			content := m.tree.String()
+			m.viewport.SetContent(content)
+			m.lastContent = content
 			m.ready = true
 		} else {
 			m.viewport.Width = msg.Width
@@ -82,12 +88,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "i":
+			// Toggle gitignore respect
+			m.respectIgnore = !m.respectIgnore
+			// Rebuild tree with new ignore setting - force update
+			m.tree = buildTreeWithOptions(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+			newContent := m.tree.String()
+			m.viewport.SetContent(newContent)
+			m.lastContent = newContent
+			// Maintain scroll position if possible
+			return m, nil
 		}
 
 	case tickMsg:
-		// Rebuild tree
-		m.tree = buildTree(m.rootPath)
-		m.viewport.SetContent(m.tree.String())
+		// Update git diff cache efficiently with one call
+		m.diffCache = getAllGitDiffs()
+
+		// Rebuild tree with cached diff data and gitignore settings
+		m.tree = buildTreeWithOptions(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+
+		// Only update viewport if content has changed
+		newContent := m.tree.String()
+		if newContent != m.lastContent {
+			m.viewport.SetContent(newContent)
+			m.lastContent = newContent
+		}
+
 		return m, tick()
 	}
 
@@ -111,7 +137,11 @@ func (m model) headerView() string {
 }
 
 func (m model) footerView() string {
-	info := "↑/↓: scroll | q: quit"
+	ignoreStatus := "OFF"
+	if m.respectIgnore {
+		ignoreStatus = "ON"
+	}
+	info := fmt.Sprintf("↑/↓: scroll | i: gitignore [%s] | q: quit", ignoreStatus)
 	return footerStyle.Width(m.width).Render(info)
 }
 
@@ -123,10 +153,20 @@ func tick() tea.Cmd {
 
 // buildTree recursively builds a file tree with git diff tracking
 func buildTree(rootPath string) *tree.Tree {
-	return buildTreeRecursive(rootPath, "")
+	return buildTreeRecursive(rootPath, "", nil, nil, false)
 }
 
-func buildTreeRecursive(path string, relativePath string) *tree.Tree {
+// buildTreeWithCache builds a file tree using cached git diff data
+func buildTreeWithCache(rootPath string, diffCache map[string]int) *tree.Tree {
+	return buildTreeRecursive(rootPath, "", diffCache, nil, false)
+}
+
+// buildTreeWithOptions builds a file tree with all options
+func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) *tree.Tree {
+	return buildTreeRecursive(rootPath, "", diffCache, gitignore, respectIgnore)
+}
+
+func buildTreeRecursive(path string, relativePath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
@@ -136,25 +176,37 @@ func buildTreeRecursive(path string, relativePath string) *tree.Tree {
 	}
 
 	for _, entry := range entries {
-		// Skip hidden files
-		if strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-
 		fullPath := filepath.Join(path, entry.Name())
 		relPath := filepath.Join(relativePath, entry.Name())
 
+		// Always skip .git directory
+		if entry.Name() == ".git" {
+			continue
+		}
+
+		// Skip hidden files (except .gitignore)
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".gitignore" {
+			continue
+		}
+
+		// Check gitignore if enabled
+		if respectIgnore && gitignore != nil && gitignore.IsIgnored(fullPath) {
+			continue
+		}
+
 		if entry.IsDir() {
-			// Skip .git directory
-			if entry.Name() == ".git" {
-				continue
-			}
 			// Recursively build subtree
-			subTree := buildTreeRecursive(fullPath, relPath)
+			subTree := buildTreeRecursive(fullPath, relPath, diffCache, gitignore, respectIgnore)
 			t.Child(subTree)
 		} else {
-			// Get git diff lines
-			diffLines := getGitDiffLines(fullPath)
+			// Get git diff lines from cache or fall back to individual call
+			var diffLines int
+			if diffCache != nil {
+				diffLines = diffCache[relPath]
+			} else {
+				// Fallback for initial load or when cache isn't available
+				diffLines = getGitDiffLines(fullPath)
+			}
 
 			// Normal style for filename
 			fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
@@ -188,13 +240,24 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 	}
 
-	// Build initial tree
-	tree := buildTree(watchPath)
+	// Load gitignore
+	gitignore := NewGitIgnore(watchPath)
+
+	// Get initial git diff cache
+	initialDiffCache := getAllGitDiffs()
+
+	// Build initial tree with gitignore support (default: ON)
+	respectIgnore := true
+	tree := buildTreeWithOptions(watchPath, initialDiffCache, gitignore, respectIgnore)
 
 	// Initialize model
 	m := model{
-		rootPath: watchPath,
-		tree:     tree,
+		rootPath:      watchPath,
+		tree:          tree,
+		diffCache:     initialDiffCache,
+		lastContent:   tree.String(),
+		gitignore:     gitignore,
+		respectIgnore: respectIgnore,
 	}
 
 	// Run with fullscreen and mouse support

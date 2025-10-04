@@ -23,18 +23,24 @@ const (
 	stepDeclined
 )
 
+type repoCreatedMsg struct {
+	err error
+}
+
 type githubSetupModel struct {
-	step        setupStep
-	accounts    []string
-	selected    int
-	account     string
-	repoName    textinput.Model
-	description textinput.Model
-	isPublic    bool
-	path        string
-	err         error
-	width       int
-	height      int
+	step         setupStep
+	accounts     []string
+	selected     int
+	account      string
+	repoName     textinput.Model
+	description  textinput.Model
+	isPublic     bool
+	path         string
+	err          error
+	width        int
+	height       int
+	brokenRemote bool   // True if local repo exists but remote is gone
+	oldRemoteURL string // The URL that's no longer working
 }
 
 var (
@@ -93,6 +99,11 @@ func (m githubSetupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+	case repoCreatedMsg:
+		m.err = msg.err
+		m.step = stepDone
+		return m, tea.Quit
 
 	case tea.KeyMsg:
 		switch m.step {
@@ -193,10 +204,19 @@ func (m githubSetupModel) View() string {
 		s.WriteString("\n" + promptStyle.Render("↑/↓: select • enter: confirm • q: cancel"))
 
 	case stepConfirmCreate:
-		s.WriteString(titleStyle.Render("📁 No git repository detected") + "\n\n")
-		s.WriteString(fmt.Sprintf("GitHub account: %s\n", selectedStyle.Render(m.account)))
-		s.WriteString(fmt.Sprintf("Directory: %s\n\n", m.path))
-		s.WriteString("Create GitHub repository to track changes?\n\n")
+		if m.brokenRemote {
+			s.WriteString(titleStyle.Render("⚠️  Remote repository not accessible") + "\n\n")
+			s.WriteString(fmt.Sprintf("Local git repo exists but remote is gone:\n"))
+			s.WriteString(fmt.Sprintf("Old remote: %s\n\n", errorStyle.Render(m.oldRemoteURL)))
+			s.WriteString(fmt.Sprintf("GitHub account: %s\n", selectedStyle.Render(m.account)))
+			s.WriteString(fmt.Sprintf("Directory: %s\n\n", m.path))
+			s.WriteString("Create new GitHub repository to replace the missing remote?\n\n")
+		} else {
+			s.WriteString(titleStyle.Render("📁 No git repository detected") + "\n\n")
+			s.WriteString(fmt.Sprintf("GitHub account: %s\n", selectedStyle.Render(m.account)))
+			s.WriteString(fmt.Sprintf("Directory: %s\n\n", m.path))
+			s.WriteString("Create GitHub repository to track changes?\n\n")
+		}
 		s.WriteString(promptStyle.Render("y: yes • n: no"))
 
 	case stepEnterName:
@@ -235,13 +255,37 @@ func (m githubSetupModel) View() string {
 	return s.String()
 }
 
-func (m *githubSetupModel) createRepo() tea.Cmd {
+func (m githubSetupModel) createRepo() tea.Cmd {
 	return func() tea.Msg {
-		// Initialize git repo
-		exec.Command("git", "init").Run()
+		// If this is a broken remote case, we don't need to init
+		if !m.brokenRemote {
+			// Initialize git repo only if it doesn't exist
+			if err := exec.Command("git", "init").Run(); err != nil {
+				return repoCreatedMsg{err: fmt.Errorf("failed to init git: %v", err)}
+			}
 
-		// Create GitHub repo
-		args := []string{"repo", "create", m.repoName.Value()}
+			// Add all files and make initial commit FIRST
+			if err := exec.Command("git", "add", ".").Run(); err != nil {
+				// If no files to add, that's ok
+				_ = err
+			}
+
+			// Try to make an initial commit
+			if err := exec.Command("git", "commit", "-m", "Initial commit").Run(); err != nil {
+				// If nothing to commit, create an empty commit
+				exec.Command("git", "commit", "--allow-empty", "-m", "Initial commit").Run()
+			}
+		}
+
+		// Create GitHub repo with the selected account
+		repoFullName := m.repoName.Value()
+		// If account is an org, prefix the repo name with org/
+		if m.account != "" && m.account != getPersonalAccount() {
+			repoFullName = m.account + "/" + m.repoName.Value()
+		}
+
+		// Create the repo without --push first if it's a broken remote
+		args := []string{"repo", "create", repoFullName}
 		if m.isPublic {
 			args = append(args, "--public")
 		} else {
@@ -250,33 +294,47 @@ func (m *githubSetupModel) createRepo() tea.Cmd {
 		if desc := m.description.Value(); desc != "" {
 			args = append(args, "--description", desc)
 		}
-		args = append(args, "--source", ".")
 
-		cmd := exec.Command("gh", args...)
-		if err := cmd.Run(); err != nil {
-			m.err = err
-			m.step = stepDone
-			return tea.Quit
+		// For broken remote, we need to update the remote URL after creating
+		if m.brokenRemote {
+			// Create repo without push
+			cmd := exec.Command("gh", args...)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return repoCreatedMsg{err: fmt.Errorf("failed to create repo: %v\n%s", err, string(output))}
+			}
+
+			// Get the new repo URL
+			getURLCmd := exec.Command("gh", "repo", "view", repoFullName, "--json", "url", "-q", ".url")
+			urlOutput, err := getURLCmd.Output()
+			if err == nil {
+				newURL := strings.TrimSpace(string(urlOutput))
+				// Update the remote URL
+				updateRemoteURL(newURL)
+				// Now push existing commits
+				exec.Command("git", "push", "-u", "origin", "main").Run()
+				// Try master if main fails
+				exec.Command("git", "push", "-u", "origin", "master").Run()
+			}
+		} else {
+			// Normal case - create and push in one go
+			args = append(args, "--source", ".", "--push")
+			cmd := exec.Command("gh", args...)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				return repoCreatedMsg{err: fmt.Errorf("failed to create repo: %v\n%s", err, string(output))}
+			}
 		}
-
-		// Make initial commit
-		exec.Command("git", "add", ".").Run()
-		exec.Command("git", "commit", "-m", "Initial commit").Run()
-		exec.Command("git", "push", "-u", "origin", "main").Run()
 
 		// Clear any previous decline
 		clearRepoDeclined(m.path)
 
-		m.step = stepDone
-		return tea.Quit
+		return repoCreatedMsg{err: nil}
 	}
 }
 
-// getGitHubAccounts returns all GitHub accounts (including orgs)
-func getGitHubAccounts() []string {
-	var accounts []string
-
-	// Get primary account
+// getPersonalAccount returns the personal GitHub account (not org)
+func getPersonalAccount() string {
 	cmd := exec.Command("gh", "auth", "status")
 	output, err := cmd.Output()
 	if err == nil {
@@ -289,20 +347,30 @@ func getGitHubAccounts() []string {
 						account := parts[i+1]
 						account = strings.TrimPrefix(account, "(")
 						account = strings.TrimSuffix(account, ")")
-						accounts = append(accounts, account)
-						break
+						return account
 					}
 				}
 			}
 		}
 	}
+	return ""
+}
+
+// getGitHubAccounts returns all GitHub accounts (including orgs)
+func getGitHubAccounts() []string {
+	var accounts []string
+
+	// Get primary account
+	if personal := getPersonalAccount(); personal != "" {
+		accounts = append(accounts, personal)
+	}
 
 	// Get organizations
-	cmd = exec.Command("gh", "api", "user/orgs", "--jq", ".[].login")
+	cmd := exec.Command("gh", "api", "user/orgs", "--jq", ".[].login")
 	if output, err := cmd.Output(); err == nil {
 		orgs := strings.Split(strings.TrimSpace(string(output)), "\n")
 		for _, org := range orgs {
-			if org != "" {
+			if org != "" && org != "null" {
 				accounts = append(accounts, org)
 			}
 		}
@@ -314,6 +382,37 @@ func getGitHubAccounts() []string {
 // runGitHubSetup runs the interactive GitHub setup
 func runGitHubSetup(path string) error {
 	model := newGitHubSetupModel(path)
+	p := tea.NewProgram(model)
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return err
+	}
+
+	// Check if user declined
+	if setup, ok := finalModel.(githubSetupModel); ok {
+		if setup.step == stepDeclined {
+			markRepoDeclined(path)
+		}
+		if setup.err != nil {
+			return setup.err
+		}
+	}
+
+	return nil
+}
+
+// runGitHubSetupForBrokenRemote handles the case where local repo exists but remote is gone
+func runGitHubSetupForBrokenRemote(path string) error {
+	model := newGitHubSetupModel(path)
+	model.brokenRemote = true
+	model.oldRemoteURL = getRemoteURL()
+	// Skip straight to confirmation since we know there's a problem
+	if len(model.accounts) == 1 {
+		model.account = model.accounts[0]
+	}
+	model.step = stepConfirmCreate
+
 	p := tea.NewProgram(model)
 
 	finalModel, err := p.Run()

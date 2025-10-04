@@ -1,0 +1,17 @@
+# Ignored directories
+unused/
+logs/
+
+# Test files
+*.test
+*.out
+
+# Temporary files
+*.tmp
+*.temp
+
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib

@@ -32,6 +32,35 @@ func isInGitRepo() bool {
 	return cmd.Run() == nil
 }
 
+// hasRemote checks if the git repo has a remote configured
+func hasRemote() bool {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	return cmd.Run() == nil
+}
+
+// remoteExists checks if the remote repository actually exists on GitHub
+func remoteExists() bool {
+	// Try to fetch from remote (dry-run)
+	cmd := exec.Command("git", "ls-remote", "origin", "HEAD")
+	return cmd.Run() == nil
+}
+
+// getRemoteURL returns the current remote URL
+func getRemoteURL() string {
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// updateRemoteURL updates the remote URL for origin
+func updateRemoteURL(newURL string) error {
+	cmd := exec.Command("git", "remote", "set-url", "origin", newURL)
+	return cmd.Run()
+}
+
 // hasGitHubCLI checks if GitHub CLI is installed and authenticated
 func hasGitHubCLI() bool {
 	cmd := exec.Command("gh", "auth", "status")
