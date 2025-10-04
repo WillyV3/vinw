@@ -26,6 +26,7 @@ go build -o vinw
 
 ## Usage
 
+### File Tree Viewer
 ```bash
 # View current directory
 ./vinw
@@ -34,11 +35,30 @@ go build -o vinw
 ./vinw /path/to/directory
 ```
 
+### File Content Viewer (Terminal)
+```bash
+# In another terminal, start the viewer
+./vinw-viewer
+
+# The viewer will automatically show the selected file
+# Updates when you select a new file in vinw
+```
+
 ## Controls
 
+### vinw (File Tree)
 - `↑/↓` - Scroll through the file tree
 - `i` - Toggle gitignore (show/hide ignored files)
+- `Enter` - Select current file for viewing in server
 - `q` - Quit
+
+### vinw-viewer (File Viewer)
+- `↑/↓` or mouse scroll - Scroll through file
+- `r` - Manual refresh
+- `q` - Quit
+- Auto-refreshes every second
+- Shows line numbers for code files
+- Displays scroll position and line count
 
 ## Requirements
 

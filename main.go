@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -45,10 +46,12 @@ type model struct {
 	ready          bool
 	width          int
 	height         int
-	diffCache      map[string]int // Cache for git diff results
-	lastContent    string         // Track last content to avoid unnecessary updates
-	gitignore      *GitIgnore     // GitIgnore patterns
-	respectIgnore  bool           // Whether to respect .gitignore
+	diffCache      map[string]int    // Cache for git diff results
+	lastContent    string            // Track last content to avoid unnecessary updates
+	gitignore      *GitIgnore        // GitIgnore patterns
+	respectIgnore  bool              // Whether to respect .gitignore
+	selectedLine   int               // Currently selected line in viewport
+	fileMap        map[int]string    // Map of line number to file path
 }
 
 func (m model) Init() tea.Cmd {
@@ -74,8 +77,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargins)
 			m.viewport.YPosition = headerHeight
 			// Rebuild tree with initial settings
-			m.tree = buildTreeWithOptions(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
-			content := m.tree.String()
+			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+			content := renderTreeWithSelection(m.tree.String(), m.selectedLine)
 			m.viewport.SetContent(content)
 			m.lastContent = content
 			m.ready = true
@@ -92,11 +95,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Toggle gitignore respect
 			m.respectIgnore = !m.respectIgnore
 			// Rebuild tree with new ignore setting - force update
-			m.tree = buildTreeWithOptions(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
-			newContent := m.tree.String()
+			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+			newContent := renderTreeWithSelection(m.tree.String(), m.selectedLine)
 			m.viewport.SetContent(newContent)
 			m.lastContent = newContent
 			// Maintain scroll position if possible
+			return m, nil
+		case "j", "down":
+			// Move selection down
+			if m.selectedLine < len(m.fileMap)-1 {
+				m.selectedLine++
+				// Update viewport with highlighted line
+				content := renderTreeWithSelection(m.tree.String(), m.selectedLine)
+				m.viewport.SetContent(content)
+				// Auto-scroll if needed
+				if m.selectedLine >= m.viewport.YOffset+m.viewport.Height-1 {
+					m.viewport.LineDown(1)
+				}
+			}
+			return m, nil
+		case "k", "up":
+			// Move selection up
+			if m.selectedLine > 0 {
+				m.selectedLine--
+				// Update viewport with highlighted line
+				content := renderTreeWithSelection(m.tree.String(), m.selectedLine)
+				m.viewport.SetContent(content)
+				// Auto-scroll if needed
+				if m.selectedLine < m.viewport.YOffset {
+					m.viewport.LineUp(1)
+				}
+			}
+			return m, nil
+		case "enter":
+			// Get the file at the selected line
+			if filePath, ok := m.fileMap[m.selectedLine]; ok {
+				fullPath := filepath.Join(m.rootPath, filePath)
+				// Write to Skate for server to pick up
+				cmd := exec.Command("skate", "set", "vinw-current-file", fullPath)
+				if err := cmd.Run(); err != nil {
+					// Debug: print error if any
+					fmt.Printf("Error writing to skate: %v\n", err)
+				}
+			}
 			return m, nil
 		}
 
@@ -105,10 +146,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffCache = getAllGitDiffs()
 
 		// Rebuild tree with cached diff data and gitignore settings
-		m.tree = buildTreeWithOptions(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+		m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
 
 		// Only update viewport if content has changed
-		newContent := m.tree.String()
+		newContent := renderTreeWithSelection(m.tree.String(), m.selectedLine)
 		if newContent != m.lastContent {
 			m.viewport.SetContent(newContent)
 			m.lastContent = newContent
@@ -164,6 +205,92 @@ func buildTreeWithCache(rootPath string, diffCache map[string]int) *tree.Tree {
 // buildTreeWithOptions builds a file tree with all options
 func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) *tree.Tree {
 	return buildTreeRecursive(rootPath, "", diffCache, gitignore, respectIgnore)
+}
+
+// buildTreeWithMap builds tree and returns a map of line numbers to file paths
+func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) (*tree.Tree, map[int]string) {
+	fileMap := make(map[int]string)
+	lineNum := 0
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, &lineNum, fileMap)
+	return t, fileMap
+}
+
+// renderTreeWithSelection renders tree with highlighted selected line
+func renderTreeWithSelection(content string, selectedLine int) string {
+	lines := strings.Split(content, "\n")
+	if selectedLine >= 0 && selectedLine < len(lines) {
+		// Highlight selected line with inverse colors
+		highlightStyle := lipgloss.NewStyle().Reverse(true)
+		lines[selectedLine] = highlightStyle.Render(lines[selectedLine])
+	}
+	return strings.Join(lines, "\n")
+}
+
+
+func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool, lineNum *int, fileMap map[int]string) *tree.Tree {
+	dirName := filepath.Base(path)
+	t := tree.Root(dirName)
+
+	// Don't count the root directory line
+	if relativePath != "" {
+		*lineNum++ // Count the directory line itself
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return t
+	}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(path, entry.Name())
+		relPath := filepath.Join(relativePath, entry.Name())
+
+		// Always skip .git directory
+		if entry.Name() == ".git" {
+			continue
+		}
+
+		// Skip hidden files (except .gitignore)
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".gitignore" {
+			continue
+		}
+
+		// Check gitignore if enabled
+		if respectIgnore && gitignore != nil && gitignore.IsIgnored(fullPath) {
+			continue
+		}
+
+		if entry.IsDir() {
+			// Recursively build subtree
+			subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, lineNum, fileMap)
+			t.Child(subTree)
+		} else {
+			// Track file in map BEFORE incrementing line number
+			// The current line (*lineNum) is where this file appears
+			fileMap[*lineNum] = relPath
+			*lineNum++
+
+			// Get git diff lines from cache
+			var diffLines int
+			if diffCache != nil {
+				diffLines = diffCache[relPath]
+			}
+
+			// Normal style for filename
+			fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+			name := fileStyle.Render(entry.Name())
+
+			// Add diff indicator if file has changes
+			if diffLines > 0 {
+				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
+				name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
+			}
+
+			t.Child(name)
+		}
+	}
+
+	return t
 }
 
 func buildTreeRecursive(path string, relativePath string, diffCache map[string]int, gitignore *GitIgnore, respectIgnore bool) *tree.Tree {
@@ -232,8 +359,9 @@ func main() {
 		watchPath = os.Args[1]
 	}
 
-	// Get absolute path for consistent Skate keys
+	// Get absolute path for everything
 	absPath, _ := filepath.Abs(watchPath)
+	watchPath = absPath  // Use absolute path everywhere
 
 	// Initialize GitHub repo if needed (only on first run for this directory)
 	if err := initGitHub(absPath); err != nil {
@@ -248,16 +376,19 @@ func main() {
 
 	// Build initial tree with gitignore support (default: ON)
 	respectIgnore := true
-	tree := buildTreeWithOptions(watchPath, initialDiffCache, gitignore, respectIgnore)
+	tree, fileMap := buildTreeWithMap(watchPath, initialDiffCache, gitignore, respectIgnore)
+	initialContent := renderTreeWithSelection(tree.String(), 0)
 
 	// Initialize model
 	m := model{
 		rootPath:      watchPath,
 		tree:          tree,
 		diffCache:     initialDiffCache,
-		lastContent:   tree.String(),
+		lastContent:   initialContent,
 		gitignore:     gitignore,
 		respectIgnore: respectIgnore,
+		selectedLine:  0,
+		fileMap:       fileMap,
 	}
 
 	// Run with fullscreen and mouse support
