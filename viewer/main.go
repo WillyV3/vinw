@@ -23,17 +23,17 @@ import (
 var (
 	// titleStyle will be dynamically created based on theme
 	titleStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color("30")).  // Default to Teal theme
-		Foreground(lipgloss.Color("230")).
-		Bold(true).
-		Padding(0, 1)
+			Background(lipgloss.Color("30")). // Default to Teal theme
+			Foreground(lipgloss.Color("230")).
+			Bold(true).
+			Padding(0, 1)
 
 	infoStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
 
 	lineNumberStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("239")).
-				MarginRight(1)
+			Foreground(lipgloss.Color("239")).
+			MarginRight(1)
 )
 
 // Messages
@@ -154,9 +154,9 @@ func (m model) View() string {
 }
 
 func (m model) headerView() string {
-	title := "vinw viewer"
+	title := "ⓋⒾⓃⓌ ⓋⒾⒺⓌⒺⓇ"
 	if m.currentFile != "" {
-		title = fmt.Sprintf("vinw viewer • %s", filepath.Base(m.currentFile))
+		title = fmt.Sprintf("ⓋⒾⓃⓌ ⓋⒾⒺⓌⒺⓇ • %s", filepath.Base(m.currentFile))
 	}
 	return titleStyle.Width(m.width).Render(title)
 }
@@ -226,7 +226,7 @@ func updateTheme() {
 
 	// Default to first theme (Teal) if no theme set
 	if bg == "" {
-		bg = "30"  // Teal from theme.go
+		bg = "30" // Teal from theme.go
 	}
 	if fg == "" {
 		fg = "230"
@@ -259,7 +259,7 @@ func updateThemeWithSession(sessionID string) {
 
 	// Default to first theme (Teal) if no theme set
 	if bg == "" {
-		bg = "30"  // Teal from theme.go
+		bg = "30" // Teal from theme.go
 	}
 	if fg == "" {
 		fg = "230"

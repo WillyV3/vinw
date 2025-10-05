@@ -8,32 +8,33 @@ import (
 	"strings"
 	"time"
 
+	"vinw/internal"
+
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/tree"
-	"vinw/internal"
 )
 
 // Styles
 var (
 	changedStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("42")).
-		Bold(true)
+			Foreground(lipgloss.Color("42")).
+			Bold(true)
 
 	normalStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
+			Foreground(lipgloss.Color("240"))
 
 	headerStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color("62")).
-		Foreground(lipgloss.Color("230")).
-		Bold(true).
-		Padding(0, 1)
+			Background(lipgloss.Color("62")).
+			Foreground(lipgloss.Color("230")).
+			Bold(true).
+			Padding(0, 1)
 
 	footerStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("243")).
-		Padding(0, 1)
+			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("243")).
+			Padding(0, 1)
 )
 
 // Messages
@@ -41,26 +42,26 @@ type tickMsg time.Time
 
 // Model
 type model struct {
-	rootPath       string
-	tree           *tree.Tree
-	treeString     string            // Cached tree string
-	treeLines      []string          // Cached tree lines
-	maxLine        int               // Cached max line number
-	viewport       viewport.Model
-	ready          bool
-	width          int
-	height         int
-	diffCache      map[string]int    // Cache for git diff results
-	lastContent    string            // Track last content to avoid unnecessary updates
-	gitignore      *internal.GitIgnore        // GitIgnore patterns
-	respectIgnore  bool              // Whether to respect .gitignore
-	selectedLine   int               // Currently selected line in viewport
-	fileMap        map[int]string    // Map of line number to file path
-	showHelp       bool              // Whether to show help
-	showViewer     bool              // Whether to show viewer command popup
-	showStartup    bool              // Whether to show startup message
-	theme          *internal.ThemeManager     // Theme manager
-	sessionID      string            // Unique session ID for this instance
+	rootPath      string
+	tree          *tree.Tree
+	treeString    string   // Cached tree string
+	treeLines     []string // Cached tree lines
+	maxLine       int      // Cached max line number
+	viewport      viewport.Model
+	ready         bool
+	width         int
+	height        int
+	diffCache     map[string]int         // Cache for git diff results
+	lastContent   string                 // Track last content to avoid unnecessary updates
+	gitignore     *internal.GitIgnore    // GitIgnore patterns
+	respectIgnore bool                   // Whether to respect .gitignore
+	selectedLine  int                    // Currently selected line in viewport
+	fileMap       map[int]string         // Map of line number to file path
+	showHelp      bool                   // Whether to show help
+	showViewer    bool                   // Whether to show viewer command popup
+	showStartup   bool                   // Whether to show startup message
+	theme         *internal.ThemeManager // Theme manager
+	sessionID     string                 // Unique session ID for this instance
 }
 
 // updateTreeCache updates the cached tree string and related values
@@ -320,7 +321,7 @@ func (m model) View() string {
 	// Show startup message with viewer command
 	if m.showStartup {
 		startupText := fmt.Sprintf(`╭─────────────────────────────────────╮
-│         Welcome to vinw!            │
+│         Welcome to ⓥⓘⓝⓦ!            │
 ╰─────────────────────────────────────╯
 
 Session ID: %s
@@ -377,7 +378,7 @@ Press any other key to dismiss...`, m.sessionID, m.sessionID)
 
 	if m.showHelp {
 		helpText := `╭─────────────────────────────────────╮
-│          vinw Help Guide            │
+│          ⓥⓘⓝⓦ Help Guide            │
 ╰─────────────────────────────────────╯
 
 Setup
@@ -430,7 +431,7 @@ func shortenPath(path string) string {
 
 func (m model) headerView() string {
 	shortPath := shortenPath(m.rootPath)
-	title := fmt.Sprintf("Vinw - %s", shortPath)
+	title := fmt.Sprintf("ⓥⓘⓝⓦ - %s", shortPath)
 	// Use theme colors for header
 	themedHeaderStyle := m.theme.CreateHeaderStyle()
 	return themedHeaderStyle.Width(m.width).Render(title)
@@ -508,7 +509,6 @@ func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
 
 	return strings.Join(result, "\n")
 }
-
 
 func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, lineNum *int, fileMap map[int]string) *tree.Tree {
 	dirName := filepath.Base(path)
@@ -655,7 +655,7 @@ func main() {
 
 	// Get absolute path for everything
 	absPath, _ := filepath.Abs(watchPath)
-	watchPath = absPath  // Use absolute path everywhere
+	watchPath = absPath // Use absolute path everywhere
 
 	// Generate unique session ID for this directory
 	sessionID := generateSessionID(absPath)
@@ -676,7 +676,7 @@ func main() {
 	if err := copyCmd.Run(); err == nil {
 		fmt.Printf("\n✓ Command copied to clipboard! Just paste in a new terminal.\n")
 	}
-	fmt.Printf("\nStarting vinw...\n\n")
+	fmt.Printf("\nStarting ⓥⓘⓝⓦ...\n\n")
 
 	// Initialize theme manager with session ID FIRST
 	themeManager := internal.NewThemeManagerWithSession(sessionID)
@@ -708,7 +708,7 @@ func main() {
 		fileMap:       fileMap,
 		theme:         themeManager,
 		sessionID:     sessionID,
-		showStartup:   true,  // Show startup screen until user presses a key
+		showStartup:   true, // Show startup screen until user presses a key
 	}
 
 	// Initialize the cache
