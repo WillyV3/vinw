@@ -86,6 +86,7 @@ vinw-viewer <session-id>
 #### File Operations
 - `a` - Create new file in current/selected directory
 - `A` - Create new directory in current/selected directory
+- `d` - Delete file or directory with confirmation
 
 #### Toggles & Settings
 - `h` - Toggle hidden files and folders
@@ -126,6 +127,14 @@ When you press `a` or `A`:
 - The new item is created in the currently selected directory (or parent if a file is selected)
 - The tree automatically refreshes to show the new item
 - Existing files/directories are protected (won't overwrite)
+
+### File Deletion
+When you press `d`:
+- A confirmation prompt appears showing the file/directory to delete
+- Non-empty directories display a warning with item count
+- Press `y` to confirm deletion or `n`/`esc` to cancel
+- The tree automatically refreshes after deletion
+- This action cannot be undone - use with caution
 
 ## Testing
 

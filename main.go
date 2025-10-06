@@ -51,6 +51,13 @@ const (
 	creationDirectory
 )
 
+// Deletion state
+type deletionState struct {
+	path      string // Full path to delete
+	isDir     bool   // Whether it's a directory
+	itemCount int    // Number of items in directory (if applicable)
+}
+
 // Model
 type model struct {
 	rootPath       string
@@ -77,6 +84,7 @@ type model struct {
 	showStartup    bool                   // Whether to show startup message
 	creatingMode   creationMode           // Current creation mode (file/directory/none)
 	textInput      textinput.Model        // Text input for file/directory names
+	deletePending  *deletionState         // Pending deletion (nil if none)
 	theme          *internal.ThemeManager // Theme manager
 	sessionID      string                 // Unique session ID for this instance
 }
@@ -241,6 +249,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.textInput, cmd = m.textInput.Update(msg)
 				return m, cmd
+			}
+		}
+
+		// If deletion is pending, handle confirmation
+		if m.deletePending != nil {
+			switch msg.String() {
+			case "y", "Y":
+				// Confirm deletion
+				var err error
+				if m.deletePending.isDir {
+					err = internal.DeleteDirectory(m.deletePending.path)
+				} else {
+					err = internal.DeleteFile(m.deletePending.path)
+				}
+
+				// Clear pending deletion
+				m.deletePending = nil
+
+				if err != nil {
+					// TODO: Show error to user
+					// For now, just rebuild tree
+				}
+
+				// Rebuild tree to remove deleted item
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+				m.updateTreeCache()
+
+				// Adjust selected line if needed
+				if m.selectedLine > m.maxLine {
+					m.selectedLine = m.maxLine
+				}
+				if m.selectedLine < 0 {
+					m.selectedLine = 0
+				}
+
+				newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+				m.viewport.SetContent(newContent)
+				m.lastContent = newContent
+
+				return m, nil
+			case "n", "N", "esc", "ctrl+c":
+				// Cancel deletion
+				m.deletePending = nil
+				return m, nil
 			}
 		}
 
@@ -553,6 +605,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput.CharLimit = 255
 			m.textInput.Width = 50
 			return m, nil
+		case "d":
+			// Delete file or directory
+			var fullPath string
+			var isDir bool
+
+			// Check if selected line is a directory
+			if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+				fullPath = filepath.Join(m.rootPath, dirPath)
+				isDir = true
+			} else if filePath, ok := m.fileMap[m.selectedLine]; ok {
+				fullPath = filepath.Join(m.rootPath, filePath)
+				isDir = false
+			} else {
+				// Nothing selected
+				return m, nil
+			}
+
+			// Get item count if it's a directory
+			itemCount := 0
+			if isDir {
+				count, err := internal.CountDirectoryContents(fullPath)
+				if err == nil {
+					itemCount = count
+				}
+			}
+
+			// Set up deletion confirmation
+			m.deletePending = &deletionState{
+				path:      fullPath,
+				isDir:     isDir,
+				itemCount: itemCount,
+			}
+
+			return m, nil
 		}
 
 	case tickMsg:
@@ -710,6 +796,43 @@ enter: confirm • esc: cancel`, title, displayPath, m.textInput.View())
 		)
 	}
 
+	// Show deletion confirmation
+	if m.deletePending != nil {
+		itemName := filepath.Base(m.deletePending.path)
+		itemType := "file"
+		warning := ""
+
+		if m.deletePending.isDir {
+			itemType = "directory"
+			if m.deletePending.itemCount > 0 {
+				warning = fmt.Sprintf("\n⚠  WARNING: This directory contains %d item(s)", m.deletePending.itemCount)
+			} else {
+				warning = "\n(empty directory)"
+			}
+		}
+
+		confirmText := fmt.Sprintf(`⚠  Delete %s?
+
+%s%s
+
+This action cannot be undone!
+
+y: confirm deletion • n/esc: cancel`, itemType, itemName, warning)
+
+		confirmStyle := lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("196")) // Red for danger
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			confirmStyle.Render(confirmText),
+		)
+	}
+
 	if m.showHelp {
 		helpText := `╭─────────────────────────────────────╮
 │          ⓥⓘⓝⓦ Help Guide            │
@@ -732,6 +855,7 @@ Navigation
   n             Toggle full nesting
   a             Create new file
   A             Create new directory
+  d             Delete file/directory
   v             Show viewer command
   ?             Toggle this help
   q             Quit
@@ -793,7 +917,7 @@ func (m model) footerView() string {
 	// Three lines for skinny layout
 	line1 := fmt.Sprintf("j/k: nav | ←/→: collapse/expand | h: hidden [%s]", hiddenStatus)
 	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
-	line3 := "a: new file | A: new dir | space/enter: select | ?: help | q: quit"
+	line3 := "a: new file | A: new dir | d: delete | space/enter: select | ?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
 	return footerStyle.Width(m.width).Render(info)
 }
