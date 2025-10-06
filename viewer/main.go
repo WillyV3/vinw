@@ -42,17 +42,21 @@ type fileContentMsg struct {
 	path    string
 	content string
 }
+type editorFinishedMsg struct{ err error }
 
 // Model
 type model struct {
-	viewport     viewport.Model
-	currentFile  string
-	content      string
-	ready        bool
-	width        int
-	height       int
-	sessionID    string // Session ID for Skate isolation
-	mouseEnabled bool   // Toggle for mouse mode
+	viewport        viewport.Model
+	currentFile     string
+	content         string
+	ready           bool
+	width           int
+	height          int
+	sessionID       string   // Session ID for Skate isolation
+	mouseEnabled    bool     // Toggle for mouse mode
+	showEditorPicker bool    // Whether to show editor selection UI
+	availableEditors []string // List of available editors
+	editorCursor     int      // Selected editor in picker
 }
 
 func (m model) Init() tea.Cmd {
@@ -89,6 +93,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		// Handle editor picker navigation
+		if m.showEditorPicker {
+			switch msg.String() {
+			case "q", "ctrl+c", "esc":
+				m.showEditorPicker = false
+				return m, nil
+			case "j", "down":
+				if m.editorCursor < len(m.availableEditors)-1 {
+					m.editorCursor++
+				}
+				return m, nil
+			case "k", "up":
+				if m.editorCursor > 0 {
+					m.editorCursor--
+				}
+				return m, nil
+			case "enter":
+				// Save preference and open editor
+				if m.editorCursor < len(m.availableEditors) {
+					selectedEditor := m.availableEditors[m.editorCursor]
+					setEditorPreference(m.sessionID, selectedEditor)
+					m.showEditorPicker = false
+					return m, openEditor(selectedEditor, m.currentFile)
+				}
+				return m, nil
+			}
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -102,6 +134,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.EnableMouseCellMotion
 			}
 			return m, tea.DisableMouse
+		case "e":
+			// Edit current file
+			if m.currentFile == "" {
+				return m, nil // No file to edit
+			}
+
+			// Check for saved editor preference
+			preferredEditor := getEditorPreference(m.sessionID)
+			if preferredEditor != "" {
+				// Use saved preference
+				return m, openEditor(preferredEditor, m.currentFile)
+			}
+
+			// No preference - detect and show picker
+			m.availableEditors = detectAvailableEditors()
+			if len(m.availableEditors) == 0 {
+				// No editors found
+				return m, nil
+			} else if len(m.availableEditors) == 1 {
+				// Only one editor - use it directly
+				setEditorPreference(m.sessionID, m.availableEditors[0])
+				return m, openEditor(m.availableEditors[0], m.currentFile)
+			}
+
+			// Multiple editors - show picker
+			m.showEditorPicker = true
+			m.editorCursor = 0
+			return m, nil
 		}
 
 	case fileCheckMsg:
@@ -110,6 +170,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.checkFile(),
 			pollFile(), // Continue polling
 		)
+
+	case editorFinishedMsg:
+		// Editor closed - refresh the file content
+		return m, m.checkFile()
 
 	case fileContentMsg:
 		// Only update if something actually changed
@@ -150,6 +214,42 @@ func (m model) View() string {
 	if !m.ready {
 		return "\n  Initializing viewer..."
 	}
+
+	// Show editor picker overlay
+	if m.showEditorPicker {
+		var pickerContent strings.Builder
+		pickerContent.WriteString("╭─────────────────────────────────────╮\n")
+		pickerContent.WriteString("│       Choose Your Editor            │\n")
+		pickerContent.WriteString("╰─────────────────────────────────────╯\n\n")
+
+		for i, editor := range m.availableEditors {
+			if i == m.editorCursor {
+				// Highlighted
+				pickerContent.WriteString(lipgloss.NewStyle().
+					Foreground(lipgloss.Color("42")).
+					Bold(true).
+					Render(fmt.Sprintf("  ▸ %s\n", editor)))
+			} else {
+				pickerContent.WriteString(fmt.Sprintf("    %s\n", editor))
+			}
+		}
+
+		pickerContent.WriteString("\nj/k: navigate • enter: select • esc: cancel")
+
+		pickerStyle := lipgloss.NewStyle().
+			Padding(2, 4).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("62"))
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			pickerStyle.Render(pickerContent.String()),
+		)
+	}
+
 	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
 }
 
@@ -174,7 +274,7 @@ func (m model) footerView() string {
 		m.viewport.YOffset+1,
 		m.viewport.TotalLineCount(),
 		scrollPercent)
-	line2 := fmt.Sprintf("m: mouse [%s] • r: refresh • q: quit", mouseStatus)
+	line2 := fmt.Sprintf("e: edit • m: mouse [%s] • r: refresh • q: quit", mouseStatus)
 	info := line1 + "\n" + line2
 
 	return infoStyle.Width(m.width).Render(info)
@@ -277,6 +377,46 @@ func updateThemeWithSession(sessionID string) {
 			Bold(true).
 			Padding(0, 1)
 	}
+}
+
+// Editor helper functions
+
+// detectAvailableEditors finds all installed terminal editors
+func detectAvailableEditors() []string {
+	editors := []string{"nvim", "vim", "nano", "emacs", "vi"}
+	available := []string{}
+
+	for _, editor := range editors {
+		if _, err := exec.LookPath(editor); err == nil {
+			available = append(available, editor)
+		}
+	}
+
+	return available
+}
+
+// getEditorPreference gets the saved editor preference for this session
+func getEditorPreference(sessionID string) string {
+	cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-editor@%s", sessionID))
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// setEditorPreference saves the editor preference for this session
+func setEditorPreference(sessionID, editor string) {
+	cmd := exec.Command("skate", "set", fmt.Sprintf("vinw-editor@%s", sessionID), editor)
+	cmd.Run()
+}
+
+// openEditor suspends the TUI and opens the file in the specified editor
+func openEditor(editor, filePath string) tea.Cmd {
+	c := exec.Command(editor, filePath)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorFinishedMsg{err}
+	})
 }
 
 // Helper functions

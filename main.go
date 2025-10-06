@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -632,18 +633,10 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 func generateSessionID(path string) string {
 	// Use absolute path to ensure consistency
 	absPath, _ := filepath.Abs(path)
-	// Create a short hash of the path
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("echo \"%s\" | shasum -a 256 | cut -c1-8", absPath))
-	output, err := cmd.Output()
-	if err != nil {
-		// Fallback to a simpler method if shasum fails
-		// Use last 8 chars of path as a simple ID
-		if len(absPath) > 8 {
-			return strings.ReplaceAll(absPath[len(absPath)-8:], "/", "_")
-		}
-		return "default"
-	}
-	return strings.TrimSpace(string(output))
+	// Create a short hash of the path using Go's crypto/sha256
+	hash := sha256.Sum256([]byte(absPath))
+	// Return first 8 hex characters of the hash
+	return fmt.Sprintf("%x", hash[:4]) // 4 bytes = 8 hex chars
 }
 
 func main() {
