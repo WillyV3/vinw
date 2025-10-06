@@ -217,27 +217,26 @@ func (m model) View() string {
 
 	// Show editor picker overlay
 	if m.showEditorPicker {
-		var pickerContent strings.Builder
-		pickerContent.WriteString("╭─────────────────────────────────────╮\n")
-		pickerContent.WriteString("│       Choose Your Editor            │\n")
-		pickerContent.WriteString("╰─────────────────────────────────────╯\n\n")
+		// Build content using plain strings (no styling in loop)
+		s := strings.Builder{}
+		s.WriteString("Choose Your Editor\n\n")
 
 		for i, editor := range m.availableEditors {
 			if i == m.editorCursor {
-				// Highlighted
-				pickerContent.WriteString(lipgloss.NewStyle().
-					Foreground(lipgloss.Color("42")).
-					Bold(true).
-					Render(fmt.Sprintf("  ▸ %s\n", editor)))
+				s.WriteString("(•) ")
 			} else {
-				pickerContent.WriteString(fmt.Sprintf("    %s\n", editor))
+				s.WriteString("( ) ")
 			}
+			s.WriteString(editor)
+			s.WriteString("\n")
 		}
 
-		pickerContent.WriteString("\nj/k: navigate • enter: select • esc: cancel")
+		s.WriteString("\n")
+		s.WriteString("j/k: navigate • enter: select • esc: cancel")
 
+		// Apply styling AFTER building the plain string
 		pickerStyle := lipgloss.NewStyle().
-			Padding(2, 4).
+			Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("62"))
 
@@ -246,7 +245,7 @@ func (m model) View() string {
 			m.height,
 			lipgloss.Center,
 			lipgloss.Center,
-			pickerStyle.Render(pickerContent.String()),
+			pickerStyle.Render(s.String()),
 		)
 	}
 
