@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -347,14 +348,26 @@ var (
 
 // updateThemeWithSession updates the title style based on current theme with session
 func updateThemeWithSession(sessionID string) {
-	// Get theme colors from Skate with session
-	cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-bg@%s", sessionID))
-	bgBytes, _ := cmd.Output()
-	bg := strings.TrimSpace(string(bgBytes))
+	// Read theme colors in parallel for faster updates
+	var wg sync.WaitGroup
+	var bg, fg string
+	wg.Add(2)
 
-	cmd = exec.Command("skate", "get", fmt.Sprintf("vinw-theme-fg@%s", sessionID))
-	fgBytes, _ := cmd.Output()
-	fg := strings.TrimSpace(string(fgBytes))
+	go func() {
+		defer wg.Done()
+		cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-bg@%s", sessionID))
+		bgBytes, _ := cmd.Output()
+		bg = strings.TrimSpace(string(bgBytes))
+	}()
+
+	go func() {
+		defer wg.Done()
+		cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-fg@%s", sessionID))
+		fgBytes, _ := cmd.Output()
+		fg = strings.TrimSpace(string(fgBytes))
+	}()
+
+	wg.Wait()
 
 	// Default to first theme (Teal) if no theme set
 	if bg == "" {

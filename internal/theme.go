@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -148,16 +149,40 @@ func (tm *ThemeManager) SaveTheme() {
 
 // BroadcastTheme broadcasts the theme change to viewer
 func (tm *ThemeManager) BroadcastTheme() {
-	// Save theme colors for viewer to pick up
+	// Run all skate commands in parallel for atomic-like update
+	var wg sync.WaitGroup
+	wg.Add(3)
+
 	if tm.SessionID != "" {
-		exec.Command("skate", "set", fmt.Sprintf("vinw-theme-bg@%s", tm.SessionID), string(tm.Current.HeaderBG)).Run()
-		exec.Command("skate", "set", fmt.Sprintf("vinw-theme-fg@%s", tm.SessionID), string(tm.Current.HeaderFG)).Run()
-		exec.Command("skate", "set", fmt.Sprintf("vinw-theme-name@%s", tm.SessionID), tm.Current.Name).Run()
+		go func() {
+			defer wg.Done()
+			exec.Command("skate", "set", fmt.Sprintf("vinw-theme-bg@%s", tm.SessionID), string(tm.Current.HeaderBG)).Run()
+		}()
+		go func() {
+			defer wg.Done()
+			exec.Command("skate", "set", fmt.Sprintf("vinw-theme-fg@%s", tm.SessionID), string(tm.Current.HeaderFG)).Run()
+		}()
+		go func() {
+			defer wg.Done()
+			exec.Command("skate", "set", fmt.Sprintf("vinw-theme-name@%s", tm.SessionID), tm.Current.Name).Run()
+		}()
 	} else {
-		exec.Command("skate", "set", "vinw-theme-bg", string(tm.Current.HeaderBG)).Run()
-		exec.Command("skate", "set", "vinw-theme-fg", string(tm.Current.HeaderFG)).Run()
-		exec.Command("skate", "set", "vinw-theme-name", tm.Current.Name).Run()
+		go func() {
+			defer wg.Done()
+			exec.Command("skate", "set", "vinw-theme-bg", string(tm.Current.HeaderBG)).Run()
+		}()
+		go func() {
+			defer wg.Done()
+			exec.Command("skate", "set", "vinw-theme-fg", string(tm.Current.HeaderFG)).Run()
+		}()
+		go func() {
+			defer wg.Done()
+			exec.Command("skate", "set", "vinw-theme-name", tm.Current.Name).Run()
+		}()
 	}
+
+	// Wait for all skate commands to complete
+	wg.Wait()
 }
 
 // GetSavedTheme retrieves the saved theme index from Skate
