@@ -56,6 +56,7 @@ type model struct {
 	lastContent   string                 // Track last content to avoid unnecessary updates
 	gitignore     *internal.GitIgnore    // GitIgnore patterns
 	respectIgnore bool                   // Whether to respect .gitignore
+	nestingEnabled bool                  // Whether to show nested directories
 	selectedLine  int                    // Currently selected line in viewport
 	fileMap       map[int]string         // Map of line number to file path
 	showHelp      bool                   // Whether to show help
@@ -98,7 +99,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargins)
 			m.viewport.YPosition = headerHeight
 			// Rebuild tree with initial settings
-			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
 			m.updateTreeCache()
 			content := renderTreeWithSelection(m.treeString, m.selectedLine)
 			m.viewport.SetContent(content)
@@ -194,7 +195,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new ignore setting
-			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
+			m.updateTreeCache()
+
+			// Try to find the same file in the new map
+			newSelectedLine := 0
+			if currentFile != "" {
+				for line, file := range m.fileMap {
+					if file == currentFile {
+						newSelectedLine = line
+						break
+					}
+				}
+			}
+
+			// Ensure selected line is within bounds
+			if newSelectedLine > m.maxLine {
+				newSelectedLine = m.maxLine
+			}
+			if newSelectedLine < 0 {
+				newSelectedLine = 0
+			}
+			m.selectedLine = newSelectedLine
+
+			// Update viewport with new selection
+			newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+			m.viewport.SetContent(newContent)
+			m.lastContent = newContent
+			return m, nil
+		case "n":
+			// Toggle directory nesting
+			m.nestingEnabled = !m.nestingEnabled
+
+			// Remember the currently selected file if one exists
+			var currentFile string
+			if f, ok := m.fileMap[m.selectedLine]; ok {
+				currentFile = f
+			}
+
+			// Rebuild tree with new nesting setting
+			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -276,7 +316,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Rebuild tree with cached diff data and gitignore settings
-		m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore)
+		m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
 		m.updateTreeCache()
 
 		// Try to maintain selection on the same file
@@ -393,6 +433,7 @@ Navigation
   k, ↑          Move up
   Enter         Select file to view
   i             Toggle gitignore
+  n             Toggle directory nesting
   v             Show viewer command
   ?             Toggle this help
   q             Quit
@@ -443,10 +484,15 @@ func (m model) footerView() string {
 	if m.respectIgnore {
 		ignoreStatus = "ON"
 	}
-	// Two lines for skinny layout
+	nestStatus := "OFF"
+	if m.nestingEnabled {
+		nestStatus = "ON"
+	}
+	// Three lines for skinny layout
 	line1 := fmt.Sprintf("j/k: nav | i: git [%s] | t/T: theme [%s]", ignoreStatus, m.theme.Current.Name)
-	line2 := "enter: select | ?: help | q: quit"
-	info := line1 + "\n" + line2
+	line2 := fmt.Sprintf("n: nesting [%s] | enter: select", nestStatus)
+	line3 := "?: help | q: quit"
+	info := line1 + "\n" + line2 + "\n" + line3
 	return footerStyle.Width(m.width).Render(info)
 }
 
@@ -472,10 +518,10 @@ func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *
 }
 
 // buildTreeWithMap builds tree and returns a map of line numbers to file paths
-func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool) (*tree.Tree, map[int]string) {
+func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
 	lineNum := 1 // Start at 1 because the root directory takes line 0
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, &lineNum, fileMap)
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, &lineNum, fileMap)
 	return t, fileMap
 }
 
@@ -511,7 +557,7 @@ func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
 	return strings.Join(result, "\n")
 }
 
-func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, lineNum *int, fileMap map[int]string) *tree.Tree {
+func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, lineNum *int, fileMap map[int]string) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
@@ -542,9 +588,14 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 		if entry.IsDir() {
 			// Count the directory line
 			*lineNum++
-			// Recursively build subtree
-			subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, lineNum, fileMap)
-			t.Child(subTree)
+			// Only recurse into subdirectories if nesting is enabled
+			if nestingEnabled {
+				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, lineNum, fileMap)
+				t.Child(subTree)
+			} else {
+				// Just show the directory name without children
+				t.Child(entry.Name())
+			}
 		} else {
 			// Track file in map at current line number
 			fileMap[*lineNum] = relPath
@@ -686,22 +737,24 @@ func main() {
 	// Get initial git diff cache
 	initialDiffCache := internal.GetAllGitDiffs()
 
-	// Build initial tree with gitignore support (default: ON)
+	// Build initial tree with gitignore support (default: ON) and nesting enabled (default: ON)
 	respectIgnore := true
-	tree, fileMap := buildTreeWithMap(watchPath, initialDiffCache, gitignore, respectIgnore)
+	nestingEnabled := true
+	tree, fileMap := buildTreeWithMap(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled)
 
 	// Initialize model
 	m := model{
-		rootPath:      watchPath,
-		tree:          tree,
-		diffCache:     initialDiffCache,
-		gitignore:     gitignore,
-		respectIgnore: respectIgnore,
-		selectedLine:  0,
-		fileMap:       fileMap,
-		theme:         themeManager,
-		sessionID:     sessionID,
-		showStartup:   true, // Show startup screen until user presses a key
+		rootPath:       watchPath,
+		tree:           tree,
+		diffCache:      initialDiffCache,
+		gitignore:      gitignore,
+		respectIgnore:  respectIgnore,
+		nestingEnabled: nestingEnabled,
+		selectedLine:   0,
+		fileMap:        fileMap,
+		theme:          themeManager,
+		sessionID:      sessionID,
+		showStartup:    true, // Show startup screen until user presses a key
 	}
 
 	// Initialize the cache
