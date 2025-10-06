@@ -11,6 +11,7 @@ import (
 
 	"vinw/internal"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -41,6 +42,15 @@ var (
 // Messages
 type tickMsg time.Time
 
+// Creation modes
+type creationMode int
+
+const (
+	creationNone creationMode = iota
+	creationFile
+	creationDirectory
+)
+
 // Model
 type model struct {
 	rootPath       string
@@ -65,6 +75,8 @@ type model struct {
 	showHelp       bool                   // Whether to show help
 	showViewer     bool                   // Whether to show viewer command popup
 	showStartup    bool                   // Whether to show startup message
+	creatingMode   creationMode           // Current creation mode (file/directory/none)
+	textInput      textinput.Model        // Text input for file/directory names
 	theme          *internal.ThemeManager // Theme manager
 	sessionID      string                 // Unique session ID for this instance
 }
@@ -167,6 +179,68 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				// Dismiss viewer popup on any other key
 				m.showViewer = false
+			}
+		}
+
+		// If in creation mode, handle text input
+		if m.creatingMode != creationNone {
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				// Cancel creation
+				m.creatingMode = creationNone
+				m.textInput.Reset()
+				return m, nil
+			case "enter":
+				// Confirm creation
+				name := strings.TrimSpace(m.textInput.Value())
+				if name == "" {
+					// Empty name, cancel
+					m.creatingMode = creationNone
+					m.textInput.Reset()
+					return m, nil
+				}
+
+				// Determine target directory
+				targetDir := m.rootPath
+				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+					// Selected line is a directory
+					targetDir = filepath.Join(m.rootPath, dirPath)
+				} else if filePath, ok := m.fileMap[m.selectedLine]; ok {
+					// Selected line is a file, use its parent directory
+					targetDir = filepath.Join(m.rootPath, filepath.Dir(filePath))
+				}
+
+				// Create file or directory
+				fullPath := filepath.Join(targetDir, name)
+				var err error
+				if m.creatingMode == creationFile {
+					err = internal.CreateFile(fullPath)
+				} else {
+					err = internal.CreateDirectory(fullPath)
+				}
+
+				// Reset creation mode
+				m.creatingMode = creationNone
+				m.textInput.Reset()
+
+				if err != nil {
+					// TODO: Show error to user - for now just silently fail and rebuild tree
+					// Could add a status message field to model later
+				}
+
+				// Rebuild tree to show new file/directory
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+				m.updateTreeCache()
+				newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+				m.viewport.SetContent(newContent)
+				m.lastContent = newContent
+
+				return m, nil
+			default:
+				// Handle text input
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(msg)
+				return m, cmd
 			}
 		}
 
@@ -461,6 +535,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// If it's a directory or not in map, do nothing (directories aren't selectable)
 			return m, nil
+		case "a":
+			// Create new file
+			m.creatingMode = creationFile
+			m.textInput = textinput.New()
+			m.textInput.Placeholder = "filename.ext"
+			m.textInput.Focus()
+			m.textInput.CharLimit = 255
+			m.textInput.Width = 50
+			return m, nil
+		case "A":
+			// Create new directory
+			m.creatingMode = creationDirectory
+			m.textInput = textinput.New()
+			m.textInput.Placeholder = "directory-name"
+			m.textInput.Focus()
+			m.textInput.CharLimit = 255
+			m.textInput.Width = 50
+			return m, nil
 		}
 
 	case tickMsg:
@@ -575,6 +667,49 @@ Press any other key to dismiss...`, m.sessionID, m.sessionID)
 		)
 	}
 
+	// Show creation prompt
+	if m.creatingMode != creationNone {
+		title := "Create New File"
+		if m.creatingMode == creationDirectory {
+			title = "Create New Directory"
+		}
+
+		// Determine target location for display
+		targetPath := m.rootPath
+		if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+			targetPath = filepath.Join(m.rootPath, dirPath)
+		} else if filePath, ok := m.fileMap[m.selectedLine]; ok {
+			targetPath = filepath.Join(m.rootPath, filepath.Dir(filePath))
+		}
+
+		// Shorten path for display
+		displayPath := targetPath
+		if home := os.Getenv("HOME"); home != "" && strings.HasPrefix(targetPath, home) {
+			displayPath = "~" + strings.TrimPrefix(targetPath, home)
+		}
+
+		promptText := fmt.Sprintf(`%s
+
+Location: %s
+
+%s
+
+enter: confirm • esc: cancel`, title, displayPath, m.textInput.View())
+
+		promptStyle := lipgloss.NewStyle().
+			Padding(1, 2).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("170"))
+
+		return lipgloss.Place(
+			m.width,
+			m.height,
+			lipgloss.Center,
+			lipgloss.Center,
+			promptStyle.Render(promptText),
+		)
+	}
+
 	if m.showHelp {
 		helpText := `╭─────────────────────────────────────╮
 │          ⓥⓘⓝⓦ Help Guide            │
@@ -595,6 +730,8 @@ Navigation
   h             Toggle hidden files
   i             Toggle gitignore
   n             Toggle full nesting
+  a             Create new file
+  A             Create new directory
   v             Show viewer command
   ?             Toggle this help
   q             Quit
@@ -656,7 +793,7 @@ func (m model) footerView() string {
 	// Three lines for skinny layout
 	line1 := fmt.Sprintf("j/k: nav | ←/→: collapse/expand | h: hidden [%s]", hiddenStatus)
 	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
-	line3 := "space/enter: select | ?: help | q: quit"
+	line3 := "a: new file | A: new dir | space/enter: select | ?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
 	return footerStyle.Width(m.width).Render(info)
 }
