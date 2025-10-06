@@ -406,7 +406,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "enter":
+		case "enter", " ":
 			// Get the file at the selected line (only files are in the map, not directories)
 			if filePath, ok := m.fileMap[m.selectedLine]; ok {
 				fullPath := filepath.Join(m.rootPath, filePath)
@@ -551,7 +551,7 @@ Navigation
   k, ↑          Move up
   h, ←          Collapse directory
   l, →          Expand directory
-  Enter         Select file to view
+  Space/Enter   Select file to view
   i             Toggle gitignore
   n             Toggle full nesting
   v             Show viewer command
@@ -610,7 +610,7 @@ func (m model) footerView() string {
 	}
 	// Three lines for skinny layout
 	line1 := fmt.Sprintf("j/k: nav | h/l: collapse/expand | i: git [%s]", ignoreStatus)
-	line2 := fmt.Sprintf("n: nesting [%s] | t/T: theme [%s] | enter: select", nestStatus, m.theme.Current.Name)
+	line2 := fmt.Sprintf("n: nesting [%s] | t/T: theme [%s] | space/enter: select", nestStatus, m.theme.Current.Name)
 	line3 := "?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
 	return footerStyle.Width(m.width).Render(info)
