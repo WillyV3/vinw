@@ -743,18 +743,21 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 	for _, entry := range entries {
 		fullPath := filepath.Join(path, entry.Name())
 		relPath := filepath.Join(relativePath, entry.Name())
+		entryName := entry.Name()
 
 		// Always skip .git directory
-		if entry.Name() == ".git" {
+		if entryName == ".git" {
 			continue
 		}
 
+		// Check if this entry is hidden
+		isHidden := strings.HasPrefix(entryName, ".")
+		isGitignore := entryName == ".gitignore"
+
 		// Skip hidden files and folders unless showHidden is enabled
 		// Always show .gitignore regardless of showHidden setting
-		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".gitignore" {
-			if !showHidden {
-				continue
-			}
+		if isHidden && !isGitignore && !showHidden {
+			continue
 		}
 
 		// Check gitignore if enabled
@@ -773,13 +776,14 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 			shouldExpand := nestingEnabled || (expandedDirs != nil && expandedDirs[relPath])
 
 			if shouldExpand {
-				// Recursively build subtree
+				// Recursively build subtree - showHidden MUST be passed through
 				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, lineNum, fileMap, dirMap)
 				t.Child(subTree)
 			} else {
-				// Just show the directory name without children
-				dirStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("147")) // Lighter color for unexpanded dirs
-				dirNameStyled := dirStyle.Render(entry.Name() + "/")
+				// Show collapsed directory (including hidden directories when showHidden is true)
+				dirStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("147"))
+				displayName := entryName + "/"
+				dirNameStyled := dirStyle.Render(displayName)
 				t.Child(dirNameStyled)
 			}
 		} else {
@@ -793,9 +797,9 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 				diffLines = diffCache[relPath]
 			}
 
-			// Normal style for filename
+			// Style filename (including hidden files when showHidden is true)
 			fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-			name := fileStyle.Render(entry.Name())
+			name := fileStyle.Render(entryName)
 
 			// Add diff indicator if file has changes
 			if diffLines > 0 {
@@ -822,14 +826,15 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 	for _, entry := range entries {
 		fullPath := filepath.Join(path, entry.Name())
 		relPath := filepath.Join(relativePath, entry.Name())
+		entryName := entry.Name()
 
 		// Always skip .git directory
-		if entry.Name() == ".git" {
+		if entryName == ".git" {
 			continue
 		}
 
 		// Skip hidden files (except .gitignore)
-		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".gitignore" {
+		if strings.HasPrefix(entryName, ".") && entryName != ".gitignore" {
 			continue
 		}
 
@@ -849,9 +854,9 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 				diffLines = diffCache[relPath]
 			}
 
-			// Normal style for filename
+			// Style filename (including hidden files when showHidden is true)
 			fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
-			name := fileStyle.Render(entry.Name())
+			name := fileStyle.Render(entryName)
 
 			// Add diff indicator if file has changes
 			if diffLines > 0 {
