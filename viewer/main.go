@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -313,33 +312,6 @@ func (m model) checkFile() tea.Cmd {
 	}
 }
 
-// updateTheme updates the title style based on current theme
-func updateTheme() {
-	// Get theme colors from Skate
-	cmd := exec.Command("skate", "get", "vinw-theme-bg")
-	bgBytes, _ := cmd.Output()
-	bg := strings.TrimSpace(string(bgBytes))
-
-	cmd = exec.Command("skate", "get", "vinw-theme-fg")
-	fgBytes, _ := cmd.Output()
-	fg := strings.TrimSpace(string(fgBytes))
-
-	// Default to first theme (Teal) if no theme set
-	if bg == "" {
-		bg = "30" // Teal from theme.go
-	}
-	if fg == "" {
-		fg = "230"
-	}
-
-	// Update title style with theme colors
-	titleStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color(bg)).
-		Foreground(lipgloss.Color(fg)).
-		Bold(true).
-		Padding(0, 1)
-}
-
 // Track current theme to avoid unnecessary updates
 var (
 	currentBg = ""
@@ -348,47 +320,41 @@ var (
 
 // updateThemeWithSession updates the title style based on current theme with session
 func updateThemeWithSession(sessionID string) {
-	// Read theme colors in parallel for faster updates
-	var wg sync.WaitGroup
-	var bg, fg string
-	wg.Add(2)
+	// Simple sequential reads - NO parallelization, NO goroutines, NO data races
+	cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-bg@%s", sessionID))
+	bgBytes, _ := cmd.Output()
+	bg := strings.TrimSpace(string(bgBytes))
 
-	go func() {
-		defer wg.Done()
-		cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-bg@%s", sessionID))
-		bgBytes, _ := cmd.Output()
-		bg = strings.TrimSpace(string(bgBytes))
-	}()
+	cmd = exec.Command("skate", "get", fmt.Sprintf("vinw-theme-fg@%s", sessionID))
+	fgBytes, _ := cmd.Output()
+	fg := strings.TrimSpace(string(fgBytes))
 
-	go func() {
-		defer wg.Done()
-		cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-fg@%s", sessionID))
-		fgBytes, _ := cmd.Output()
-		fg = strings.TrimSpace(string(fgBytes))
-	}()
+	// Only update if we got VALID values (not empty)
+	// This prevents flashing to default during background writes
+	if bg != "" && fg != "" {
+		// Got valid theme values - update if changed
+		if bg != currentBg || fg != currentFg {
+			currentBg = bg
+			currentFg = fg
 
-	wg.Wait()
-
-	// Default to first theme (Teal) if no theme set
-	if bg == "" {
-		bg = "30" // Teal from theme.go
-	}
-	if fg == "" {
-		fg = "230"
-	}
-
-	// Only update if theme actually changed
-	if bg != currentBg || fg != currentFg {
-		currentBg = bg
-		currentFg = fg
-
-		// Update title style with theme colors
+			// Update title style with theme colors
+			titleStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color(bg)).
+				Foreground(lipgloss.Color(fg)).
+				Bold(true).
+				Padding(0, 1)
+		}
+	} else if currentBg == "" && currentFg == "" {
+		// First time and no values in skate - use defaults
+		currentBg = "30"  // Teal from theme.go
+		currentFg = "230"
 		titleStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color(bg)).
-			Foreground(lipgloss.Color(fg)).
+			Background(lipgloss.Color(currentBg)).
+			Foreground(lipgloss.Color(currentFg)).
 			Bold(true).
 			Padding(0, 1)
 	}
+	// Otherwise: got empty values but have a current theme - keep it (do nothing)
 }
 
 // Editor helper functions
