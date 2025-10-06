@@ -43,27 +43,29 @@ type tickMsg time.Time
 
 // Model
 type model struct {
-	rootPath      string
-	tree          *tree.Tree
-	treeString    string   // Cached tree string
-	treeLines     []string // Cached tree lines
-	maxLine       int      // Cached max line number
-	viewport      viewport.Model
-	ready         bool
-	width         int
-	height        int
-	diffCache     map[string]int         // Cache for git diff results
-	lastContent   string                 // Track last content to avoid unnecessary updates
-	gitignore     *internal.GitIgnore    // GitIgnore patterns
-	respectIgnore bool                   // Whether to respect .gitignore
-	nestingEnabled bool                  // Whether to show nested directories
-	selectedLine  int                    // Currently selected line in viewport
-	fileMap       map[int]string         // Map of line number to file path
-	showHelp      bool                   // Whether to show help
-	showViewer    bool                   // Whether to show viewer command popup
-	showStartup   bool                   // Whether to show startup message
-	theme         *internal.ThemeManager // Theme manager
-	sessionID     string                 // Unique session ID for this instance
+	rootPath       string
+	tree           *tree.Tree
+	treeString     string                 // Cached tree string
+	treeLines      []string               // Cached tree lines
+	maxLine        int                    // Cached max line number
+	viewport       viewport.Model
+	ready          bool
+	width          int
+	height         int
+	diffCache      map[string]int         // Cache for git diff results
+	lastContent    string                 // Track last content to avoid unnecessary updates
+	gitignore      *internal.GitIgnore    // GitIgnore patterns
+	respectIgnore  bool                   // Whether to respect .gitignore
+	nestingEnabled bool                   // Whether to show nested directories (global toggle)
+	expandedDirs   map[string]bool        // Track which directories are expanded (for manual expansion)
+	selectedLine   int                    // Currently selected line in viewport
+	fileMap        map[int]string         // Map of line number to file path
+	dirMap         map[int]string         // Map of line number to directory path
+	showHelp       bool                   // Whether to show help
+	showViewer     bool                   // Whether to show viewer command popup
+	showStartup    bool                   // Whether to show startup message
+	theme          *internal.ThemeManager // Theme manager
+	sessionID      string                 // Unique session ID for this instance
 }
 
 // updateTreeCache updates the cached tree string and related values
@@ -99,7 +101,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargins)
 			m.viewport.YPosition = headerHeight
 			// Rebuild tree with initial settings
-			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
 			m.updateTreeCache()
 			content := renderTreeWithSelection(m.treeString, m.selectedLine)
 			m.viewport.SetContent(content)
@@ -195,7 +197,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new ignore setting
-			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -227,6 +229,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Toggle directory nesting
 			m.nestingEnabled = !m.nestingEnabled
 
+			// Clear expanded directories when toggling nesting on/off
+			if m.nestingEnabled {
+				// When enabling full nesting, clear manual expansions
+				m.expandedDirs = make(map[string]bool)
+			}
+
 			// Remember the currently selected file if one exists
 			var currentFile string
 			if f, ok := m.fileMap[m.selectedLine]; ok {
@@ -234,7 +242,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new nesting setting
-			m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -288,6 +296,116 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "right", "l":
+			// Expand directory when nesting is disabled
+			if !m.nestingEnabled {
+				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+					// Mark directory as expanded
+					m.expandedDirs[dirPath] = true
+
+					// Remember current selection
+					var currentSelection string
+					if f, ok := m.fileMap[m.selectedLine]; ok {
+						currentSelection = f
+					} else if d, ok := m.dirMap[m.selectedLine]; ok {
+						currentSelection = d
+					}
+
+					// Rebuild tree with new expansion
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+					m.updateTreeCache()
+
+					// Try to maintain selection
+					newSelectedLine := m.selectedLine
+					if currentSelection != "" {
+						for line, file := range m.fileMap {
+							if file == currentSelection {
+								newSelectedLine = line
+								break
+							}
+						}
+						// Also check dirMap if not found in fileMap
+						if newSelectedLine == m.selectedLine {
+							for line, dir := range m.dirMap {
+								if dir == currentSelection {
+									newSelectedLine = line
+									break
+								}
+							}
+						}
+					}
+
+					// Ensure selected line is within bounds
+					if newSelectedLine > m.maxLine {
+						newSelectedLine = m.maxLine
+					}
+					if newSelectedLine < 0 {
+						newSelectedLine = 0
+					}
+					m.selectedLine = newSelectedLine
+
+					// Update viewport
+					newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+					m.viewport.SetContent(newContent)
+					m.lastContent = newContent
+				}
+			}
+			return m, nil
+		case "left", "h":
+			// Collapse directory when nesting is disabled
+			if !m.nestingEnabled {
+				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+					// Mark directory as collapsed
+					delete(m.expandedDirs, dirPath)
+
+					// Remember current selection
+					var currentSelection string
+					if f, ok := m.fileMap[m.selectedLine]; ok {
+						currentSelection = f
+					} else if d, ok := m.dirMap[m.selectedLine]; ok {
+						currentSelection = d
+					}
+
+					// Rebuild tree with new expansion
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+					m.updateTreeCache()
+
+					// Try to maintain selection
+					newSelectedLine := m.selectedLine
+					if currentSelection != "" {
+						for line, file := range m.fileMap {
+							if file == currentSelection {
+								newSelectedLine = line
+								break
+							}
+						}
+						// Also check dirMap if not found in fileMap
+						if newSelectedLine == m.selectedLine {
+							for line, dir := range m.dirMap {
+								if dir == currentSelection {
+									newSelectedLine = line
+									break
+								}
+							}
+						}
+					}
+
+					// Ensure selected line is within bounds
+					if newSelectedLine > m.maxLine {
+						newSelectedLine = m.maxLine
+					}
+					if newSelectedLine < 0 {
+						newSelectedLine = 0
+					}
+					m.selectedLine = newSelectedLine
+
+					// Update viewport
+					newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+					m.viewport.SetContent(newContent)
+					m.lastContent = newContent
+				}
+			}
+			return m, nil
 		case "enter":
 			// Get the file at the selected line (only files are in the map, not directories)
 			if filePath, ok := m.fileMap[m.selectedLine]; ok {
@@ -316,7 +434,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Rebuild tree with cached diff data and gitignore settings
-		m.tree, m.fileMap = buildTreeWithMap(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled)
+		m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
 		m.updateTreeCache()
 
 		// Try to maintain selection on the same file
@@ -431,9 +549,11 @@ Navigation
 ──────────
   j, ↓          Move down
   k, ↑          Move up
+  h, ←          Collapse directory
+  l, →          Expand directory
   Enter         Select file to view
   i             Toggle gitignore
-  n             Toggle directory nesting
+  n             Toggle full nesting
   v             Show viewer command
   ?             Toggle this help
   q             Quit
@@ -489,8 +609,8 @@ func (m model) footerView() string {
 		nestStatus = "ON"
 	}
 	// Three lines for skinny layout
-	line1 := fmt.Sprintf("j/k: nav | i: git [%s] | t/T: theme [%s]", ignoreStatus, m.theme.Current.Name)
-	line2 := fmt.Sprintf("n: nesting [%s] | enter: select", nestStatus)
+	line1 := fmt.Sprintf("j/k: nav | h/l: collapse/expand | i: git [%s]", ignoreStatus)
+	line2 := fmt.Sprintf("n: nesting [%s] | t/T: theme [%s] | enter: select", nestStatus, m.theme.Current.Name)
 	line3 := "?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
 	return footerStyle.Width(m.width).Render(info)
@@ -517,12 +637,21 @@ func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *
 	return buildTreeRecursive(rootPath, "", diffCache, gitignore, respectIgnore)
 }
 
-// buildTreeWithMap builds tree and returns a map of line numbers to file paths
+// buildTreeWithMap builds tree and returns a map of line numbers to file paths (deprecated, use buildTreeWithMaps)
 func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
 	lineNum := 1 // Start at 1 because the root directory takes line 0
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, &lineNum, fileMap)
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), &lineNum, fileMap, nil)
 	return t, fileMap
+}
+
+// buildTreeWithMaps builds tree and returns maps of line numbers to file paths and directory paths
+func buildTreeWithMaps(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool) (*tree.Tree, map[int]string, map[int]string) {
+	fileMap := make(map[int]string)
+	dirMap := make(map[int]string)
+	lineNum := 1 // Start at 1 because the root directory takes line 0
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, &lineNum, fileMap, dirMap)
+	return t, fileMap, dirMap
 }
 
 // renderTreeWithSelection renders tree with highlighted selected line
@@ -557,7 +686,7 @@ func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
 	return strings.Join(result, "\n")
 }
 
-func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, lineNum *int, fileMap map[int]string) *tree.Tree {
+func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, lineNum *int, fileMap map[int]string, dirMap map[int]string) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
@@ -586,18 +715,27 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 		}
 
 		if entry.IsDir() {
-			// Count the directory line
+			// Track directory in dirMap at current line
+			if dirMap != nil {
+				dirMap[*lineNum] = relPath
+			}
 			*lineNum++
-			// Only recurse into subdirectories if nesting is enabled
-			if nestingEnabled {
-				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, lineNum, fileMap)
+
+			// Determine if we should expand this directory
+			shouldExpand := nestingEnabled || (expandedDirs != nil && expandedDirs[relPath])
+
+			if shouldExpand {
+				// Recursively build subtree
+				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, lineNum, fileMap, dirMap)
 				t.Child(subTree)
 			} else {
 				// Just show the directory name without children
-				t.Child(entry.Name())
+				dirStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("147")) // Lighter color for unexpanded dirs
+				dirNameStyled := dirStyle.Render(entry.Name() + "/")
+				t.Child(dirNameStyled)
 			}
 		} else {
-			// Track file in map at current line number
+			// Track file in fileMap at current line number
 			fileMap[*lineNum] = relPath
 			*lineNum++
 
@@ -740,7 +878,8 @@ func main() {
 	// Build initial tree with gitignore support (default: ON) and nesting enabled (default: ON)
 	respectIgnore := true
 	nestingEnabled := true
-	tree, fileMap := buildTreeWithMap(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled)
+	expandedDirs := make(map[string]bool)
+	tree, fileMap, dirMap := buildTreeWithMaps(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs)
 
 	// Initialize model
 	m := model{
@@ -750,8 +889,10 @@ func main() {
 		gitignore:      gitignore,
 		respectIgnore:  respectIgnore,
 		nestingEnabled: nestingEnabled,
+		expandedDirs:   expandedDirs,
 		selectedLine:   0,
 		fileMap:        fileMap,
+		dirMap:         dirMap,
 		theme:          themeManager,
 		sessionID:      sessionID,
 		showStartup:    true, // Show startup screen until user presses a key
