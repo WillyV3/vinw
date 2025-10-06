@@ -56,6 +56,7 @@ type model struct {
 	lastContent    string                 // Track last content to avoid unnecessary updates
 	gitignore      *internal.GitIgnore    // GitIgnore patterns
 	respectIgnore  bool                   // Whether to respect .gitignore
+	showHidden     bool                   // Whether to show hidden files and folders
 	nestingEnabled bool                   // Whether to show nested directories (global toggle)
 	expandedDirs   map[string]bool        // Track which directories are expanded (for manual expansion)
 	selectedLine   int                    // Currently selected line in viewport
@@ -101,7 +102,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargins)
 			m.viewport.YPosition = headerHeight
 			// Rebuild tree with initial settings
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
 			m.updateTreeCache()
 			content := renderTreeWithSelection(m.treeString, m.selectedLine)
 			m.viewport.SetContent(content)
@@ -197,7 +198,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new ignore setting
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -242,7 +243,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new nesting setting
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -296,6 +297,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "h":
+			// Toggle hidden files and folders
+			m.showHidden = !m.showHidden
+
+			// Remember the currently selected file if one exists
+			var currentFile string
+			if f, ok := m.fileMap[m.selectedLine]; ok {
+				currentFile = f
+			}
+
+			// Rebuild tree with new hidden setting
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+			m.updateTreeCache()
+
+			// Try to find the same file in the new map
+			newSelectedLine := 0
+			if currentFile != "" {
+				for line, file := range m.fileMap {
+					if file == currentFile {
+						newSelectedLine = line
+						break
+					}
+				}
+			}
+
+			// Ensure selected line is within bounds
+			if newSelectedLine > m.maxLine {
+				newSelectedLine = m.maxLine
+			}
+			if newSelectedLine < 0 {
+				newSelectedLine = 0
+			}
+			m.selectedLine = newSelectedLine
+
+			// Update viewport with new selection
+			newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+			m.viewport.SetContent(newContent)
+			m.lastContent = newContent
+			return m, nil
 		case "right", "l":
 			// Expand directory when nesting is disabled
 			if !m.nestingEnabled {
@@ -312,7 +352,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					// Rebuild tree with new expansion
-					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
 					m.updateTreeCache()
 
 					// Try to maintain selection
@@ -351,7 +391,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
-		case "left", "h":
+		case "left":
 			// Collapse directory when nesting is disabled
 			if !m.nestingEnabled {
 				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
@@ -367,7 +407,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					// Rebuild tree with new expansion
-					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
 					m.updateTreeCache()
 
 					// Try to maintain selection
@@ -434,7 +474,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Rebuild tree with cached diff data and gitignore settings
-		m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs)
+		m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
 		m.updateTreeCache()
 
 		// Try to maintain selection on the same file
@@ -549,9 +589,10 @@ Navigation
 ──────────
   j, ↓          Move down
   k, ↑          Move up
-  h, ←          Collapse directory
-  l, →          Expand directory
+  ←             Collapse directory
+  →             Expand directory
   Space/Enter   Select file to view
+  h             Toggle hidden files
   i             Toggle gitignore
   n             Toggle full nesting
   v             Show viewer command
@@ -604,14 +645,18 @@ func (m model) footerView() string {
 	if m.respectIgnore {
 		ignoreStatus = "ON"
 	}
+	hiddenStatus := "OFF"
+	if m.showHidden {
+		hiddenStatus = "ON"
+	}
 	nestStatus := "OFF"
 	if m.nestingEnabled {
 		nestStatus = "ON"
 	}
 	// Three lines for skinny layout
-	line1 := fmt.Sprintf("j/k: nav | h/l: collapse/expand | i: git [%s]", ignoreStatus)
-	line2 := fmt.Sprintf("n: nesting [%s] | t/T: theme [%s] | space/enter: select", nestStatus, m.theme.Current.Name)
-	line3 := "?: help | q: quit"
+	line1 := fmt.Sprintf("j/k: nav | ←/→: collapse/expand | h: hidden [%s]", hiddenStatus)
+	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
+	line3 := "space/enter: select | ?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
 	return footerStyle.Width(m.width).Render(info)
 }
@@ -641,16 +686,16 @@ func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *
 func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
 	lineNum := 1 // Start at 1 because the root directory takes line 0
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), &lineNum, fileMap, nil)
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), false, &lineNum, fileMap, nil)
 	return t, fileMap
 }
 
 // buildTreeWithMaps builds tree and returns maps of line numbers to file paths and directory paths
-func buildTreeWithMaps(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool) (*tree.Tree, map[int]string, map[int]string) {
+func buildTreeWithMaps(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool) (*tree.Tree, map[int]string, map[int]string) {
 	fileMap := make(map[int]string)
 	dirMap := make(map[int]string)
 	lineNum := 1 // Start at 1 because the root directory takes line 0
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, &lineNum, fileMap, dirMap)
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, &lineNum, fileMap, dirMap)
 	return t, fileMap, dirMap
 }
 
@@ -686,7 +731,7 @@ func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
 	return strings.Join(result, "\n")
 }
 
-func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, lineNum *int, fileMap map[int]string, dirMap map[int]string) *tree.Tree {
+func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool, lineNum *int, fileMap map[int]string, dirMap map[int]string) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
@@ -704,9 +749,12 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 			continue
 		}
 
-		// Skip hidden files (except .gitignore)
+		// Skip hidden files and folders unless showHidden is enabled
+		// Always show .gitignore regardless of showHidden setting
 		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".gitignore" {
-			continue
+			if !showHidden {
+				continue
+			}
 		}
 
 		// Check gitignore if enabled
@@ -726,7 +774,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 
 			if shouldExpand {
 				// Recursively build subtree
-				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, lineNum, fileMap, dirMap)
+				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, lineNum, fileMap, dirMap)
 				t.Child(subTree)
 			} else {
 				// Just show the directory name without children
@@ -878,8 +926,9 @@ func main() {
 	// Build initial tree with gitignore support (default: ON) and nesting enabled (default: ON)
 	respectIgnore := true
 	nestingEnabled := true
+	showHidden := false // Hidden files/folders off by default
 	expandedDirs := make(map[string]bool)
-	tree, fileMap, dirMap := buildTreeWithMaps(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs)
+	tree, fileMap, dirMap := buildTreeWithMaps(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden)
 
 	// Initialize model
 	m := model{
@@ -888,6 +937,7 @@ func main() {
 		diffCache:      initialDiffCache,
 		gitignore:      gitignore,
 		respectIgnore:  respectIgnore,
+		showHidden:     showHidden,
 		nestingEnabled: nestingEnabled,
 		expandedDirs:   expandedDirs,
 		selectedLine:   0,
