@@ -161,6 +161,28 @@ vinw is built with:
 - [Chroma](https://github.com/alecthomas/chroma) - Syntax highlighting
 - [Skate](https://github.com/charmbracelet/skate) - Session state management
 
+## Feedback
+
+I worked hard on vinw and the vinw-workspace companion. If you end up trying it and want to leave feedback, I'd appreciate it. I want to make it better so more people use it. This is the hard product part. Bear with me.
+
+**Main Application (filetree and detached viewer/editor)**
+
+```bash
+brew install willyv3/tap/vinw
+```
+https://github.com/WillyV3/vinw
+
+**Companion app (tmux workspace launcher)**
+
+```bash
+brew install willyv3/tap/vinw-workspace
+```
+https://github.com/WillyV3/vinw-workspace
+
+**Feedback Form:** https://forms.gle/fNhsLD5tSJxL2Fu4A
+
+-WillyV3
+
 ## License
 
 MIT
