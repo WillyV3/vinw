@@ -41,6 +41,7 @@ var (
 
 // Messages
 type tickMsg time.Time
+type clearCopyHintMsg struct{}
 
 // Creation modes
 type creationMode int
@@ -87,6 +88,8 @@ type model struct {
 	deletePending  *deletionState         // Pending deletion (nil if none)
 	theme          *internal.ThemeManager // Theme manager
 	sessionID      string                 // Unique session ID for this instance
+	showCopyHint   bool                   // Whether to show "Copied!" hint
+	copiedPath     string                 // Path that was copied (for display)
 }
 
 // updateTreeCache updates the cached tree string and related values
@@ -318,6 +321,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				copyCmd := exec.Command("pbcopy")
 				copyCmd.Stdin = strings.NewReader(pathToCopy)
 				copyCmd.Run() // Ignore errors, not all systems have pbcopy
+
+				// Show hint for 3 seconds
+				m.showCopyHint = true
+				m.copiedPath = filepath.Base(pathToCopy)
+				return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+					return clearCopyHintMsg{}
+				})
 			}
 			return m, nil
 		case "q", "ctrl+c":
@@ -658,6 +668,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+	case clearCopyHintMsg:
+		m.showCopyHint = false
+		m.copiedPath = ""
+		return m, nil
+
 	case tickMsg:
 		// Update git diff cache efficiently with one call
 		m.diffCache = internal.GetAllGitDiffs()
@@ -914,6 +929,16 @@ func shortenPath(path string) string {
 func (m model) headerView() string {
 	shortPath := shortenPath(m.rootPath)
 	title := fmt.Sprintf("ⓥⓘⓝⓦ - %s", shortPath)
+
+	// Add copy hint if active
+	if m.showCopyHint {
+		copyHintStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("42")). // Green
+			Bold(true)
+		hint := copyHintStyle.Render(fmt.Sprintf(" [Copied: %s]", m.copiedPath))
+		title = title + hint
+	}
+
 	// Use theme colors for header
 	themedHeaderStyle := m.theme.CreateHeaderStyle()
 	return themedHeaderStyle.Width(m.width).Render(title)
