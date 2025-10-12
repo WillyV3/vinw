@@ -303,6 +303,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "v":
 			m.showViewer = !m.showViewer
 			return m, nil
+		case "c":
+			// Copy path of selected file or directory to clipboard
+			var pathToCopy string
+			if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+				// Directory selected
+				pathToCopy = filepath.Join(m.rootPath, dirPath)
+			} else if filePath, ok := m.fileMap[m.selectedLine]; ok {
+				// File selected
+				pathToCopy = filepath.Join(m.rootPath, filePath)
+			}
+
+			if pathToCopy != "" {
+				copyCmd := exec.Command("pbcopy")
+				copyCmd.Stdin = strings.NewReader(pathToCopy)
+				copyCmd.Run() // Ignore errors, not all systems have pbcopy
+			}
+			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "t":
@@ -856,6 +873,7 @@ Navigation
   a             Create new file
   A             Create new directory
   d             Delete file/directory
+  c             Copy path to clipboard
   v             Show viewer command
   ?             Toggle this help
   q             Quit
@@ -917,7 +935,7 @@ func (m model) footerView() string {
 	// Three lines for skinny layout
 	line1 := fmt.Sprintf("j/k: nav | ←/→: collapse/expand | h: hidden [%s]", hiddenStatus)
 	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
-	line3 := "a: new file | A: new dir | d: delete | space/enter: select | ?: help | q: quit"
+	line3 := "a: new file | A: new dir | d: delete | c: copy path | space/enter: select | ?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
 	return footerStyle.Width(m.width).Render(info)
 }
