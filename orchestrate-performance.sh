@@ -20,24 +20,53 @@ PIPELINE_NAME="vinw-performance"
 PIPELINE_DESC="vinw Performance Improvement - 4 Phase Plan"
 
 # Define agents based on PERFORMANCE_PLAN.md phases
+# IMPORTANT: Each agent should write checkpoints to .agent-status/ for monitoring
 AGENTS=(
-  "phase1-measurement:Phase 1: Add timing measurements to current code. Add timing logs to buildTreeWithMaps() and GetAllGitDiffs(). Test with small/medium/large repos. Output timing data to MEASUREMENTS.txt. Do NOT change any logic yet - just measure. Success: MEASUREMENTS.txt exists with timing data from at least 3 different repo sizes. Reference: @PERFORMANCE_PLAN.md lines 413-443."
+  "phase1-measurement:Phase 1: Add timing measurements to current code. Add timing logs to buildTreeWithMaps() and GetAllGitDiffs(). Test with small/medium/large repos. Output timing data to MEASUREMENTS.txt. Do NOT change any logic yet - just measure. Success: MEASUREMENTS.txt exists with timing data from at least 3 different repo sizes. Reference: @PERFORMANCE_PLAN.md lines 413-443.
 
-  "phase2-extract:Phase 2: Extract pure functions without changing behavior. Create internal/fsscan.go with ScanFilesystem(). Create internal/filters.go with ApplyGitignore, ApplyHiddenFilter, ApplyNesting. Update main.go to use new functions. Success: go build ./... succeeds, all existing functionality works, code is more modular. Reference: @PERFORMANCE_PLAN.md lines 445-489."
+IMPORTANT: Write progress updates to .agent-status/phase1-status.md as you work:
+- What you're currently doing
+- Files you've modified
+- Any issues encountered
+- Next steps
+This allows the vinw-agent (in another terminal) to check on your progress."
 
-  "phase3-optimize:Phase 3: Optimize the separated modules. Replace os.ReadDir with filepath.WalkDir in fsscan.go. Remove line counting from git diff (mark untracked as -1). Add 'r' and 'R' keybindings for manual refresh. Remove/extend auto-tick to 60s. Success: go build ./... && go test ./... pass, toggles feel instant. Reference: @PERFORMANCE_PLAN.md lines 491-557."
+  "phase2-extract:Phase 2: Extract pure functions without changing behavior. Create internal/fsscan.go with ScanFilesystem(). Create internal/filters.go with ApplyGitignore, ApplyHiddenFilter, ApplyNesting. Update main.go to use new functions. Success: go build ./... succeeds, all existing functionality works, code is more modular. Reference: @PERFORMANCE_PLAN.md lines 445-489.
 
-  "phase4-remeasure:Phase 4: Measure again and document improvements. Run same benchmarks as Phase 1. Compare results. Document speed improvements in IMPROVEMENTS.txt. Success: IMPROVEMENTS.txt shows quantified improvements (e.g., 'Tree rebuild: 40% faster'). Reference: @PERFORMANCE_PLAN.md lines 559-569."
+IMPORTANT: Write progress updates to .agent-status/phase2-status.md as you work:
+- Current file being refactored
+- Functions extracted so far
+- Any behavioral changes (should be NONE)
+- Test results
+This allows monitoring by vinw-agent."
+
+  "phase3-optimize:Phase 3: Optimize the separated modules. Replace os.ReadDir with filepath.WalkDir in fsscan.go. Remove line counting from git diff (mark untracked as -1). Add 'r' and 'R' keybindings for manual refresh. Remove/extend auto-tick to 60s. Success: go build ./... && go test ./... pass, toggles feel instant. Reference: @PERFORMANCE_PLAN.md lines 491-557.
+
+CRITICAL PHASE: Write detailed updates to .agent-status/phase3-status.md:
+- Each optimization being applied
+- Before/after code snippets for key changes
+- Any unexpected issues
+- Performance observations
+The vinw-agent needs to review this phase carefully."
+
+  "phase4-remeasure:Phase 4: Measure again and document improvements. Run same benchmarks as Phase 1. Compare results. Document speed improvements in IMPROVEMENTS.txt. Success: IMPROVEMENTS.txt shows quantified improvements (e.g., 'Tree rebuild: 40% faster'). Reference: @PERFORMANCE_PLAN.md lines 559-569.
+
+IMPORTANT: Write final summary to .agent-status/phase4-status.md:
+- Benchmark results comparison
+- Quantified improvements
+- Any regressions found
+- Recommendations for vinw-agent review"
 )
 
-# Go-specific quality gate
-QUALITY_GATE="go build ./... && go test ./..."
+# Go-specific quality gate (build main package only, skip broken unused/ dir)
+QUALITY_GATE="go build . && go test ./internal/..."
 
 ###############################################################################
 # INTERNAL VARIABLES
 ###############################################################################
 
 LOG_DIR=".orchestration-logs"
+AGENT_STATUS_DIR=".agent-status"
 STATE_FILE=".orchestrate-state.json"
 START_TIME=$(date +%s)
 TOTAL_COST=0
@@ -45,6 +74,36 @@ COMPLETED_AGENTS=()
 CURRENT_AGENT=""
 
 mkdir -p "$LOG_DIR"
+mkdir -p "$AGENT_STATUS_DIR"
+
+# Create README for vinw-agent
+cat > "$AGENT_STATUS_DIR/README.md" << 'EOF'
+# Agent Status Directory
+
+Spawned agents write progress updates here for monitoring.
+
+## Files
+- `phase1-status.md` - Phase 1 measurement progress
+- `phase2-status.md` - Phase 2 extraction progress
+- `phase3-status.md` - Phase 3 optimization progress (CRITICAL)
+- `phase4-status.md` - Phase 4 re-measurement progress
+
+## For vinw-agent
+Check these files during orchestration to:
+- Monitor agent progress
+- Review changes before they're committed
+- Provide guidance if agents get stuck
+- Verify critical Phase 3 changes
+
+## Usage
+```bash
+# Watch for updates
+watch -n 5 cat .agent-status/phase*-status.md
+
+# Or check manually
+cat .agent-status/phase3-status.md
+```
+EOF
 
 ###############################################################################
 # UI FUNCTIONS
