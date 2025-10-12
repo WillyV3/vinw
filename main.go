@@ -1189,9 +1189,9 @@ func main() {
 	// Get initial git diff cache
 	initialDiffCache := internal.GetAllGitDiffs()
 
-	// Build initial tree with gitignore support (default: ON) and nesting enabled (default: ON)
+	// Build initial tree with gitignore support (default: ON) and nesting disabled (default: OFF)
 	respectIgnore := true
-	nestingEnabled := true
+	nestingEnabled := false // Nesting off by default for large repos
 	showHidden := false // Hidden files/folders off by default
 	expandedDirs := make(map[string]bool)
 	tree, fileMap, dirMap := buildTreeWithMaps(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden)
