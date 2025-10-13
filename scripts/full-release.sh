@@ -234,7 +234,7 @@ main() {
                 # Clean up commit message and limit length
                 clean_commit=$(echo "$commit" | sed 's/^[^:]*: //' | cut -c1-60)
                 RELEASE_NOTES="${RELEASE_NOTES}
-        • ${clean_commit}"
+        - ${clean_commit}"
             done < <(git log ${CURRENT_VERSION}..HEAD --pretty=format:"%s" --no-merges | head -5)
 
             RELEASE_NOTES="${RELEASE_NOTES}
@@ -245,7 +245,7 @@ main() {
         # Find the ASCII art section and inject version/notes after it
         if [[ -n "$RELEASE_NOTES" ]]; then
             # First, remove old "What's New" section if it exists
-            perl -i -pe 'BEGIN{undef $/;} s/\n\n      What'\''s New in v[^\n]+\n(        •[^\n]+\n)+//smg' "$FORMULA_FILE"
+            perl -i -pe 'BEGIN{undef $/;} s/\n\n      What'\''s New in v[^\n]+\n(        [-•][^\n]+\n)+//smg' "$FORMULA_FILE"
 
             # Find the line after the ASCII art (the blank line before "Blog:")
             # and insert release notes there
