@@ -243,28 +243,22 @@ main() {
 
         # Update caveats section with version and release notes
         # Find the ASCII art section and inject version/notes after it
-        awk -v version="$NEW_VERSION" -v notes="$RELEASE_NOTES" '
-        /░░░░░    ░░░░░ ░░░░ ░░░░░    ░░░░ ░░░░/ {
-            print
-            if (notes != "") {
-                print notes
-            }
-            next
-        }
-        # Skip old "Whats New" section if it exists
-        /What'\''s New in v/ {
-            in_notes=1
-            next
-        }
-        in_notes && /^      [A-Z]/ {
-            next
-        }
-        in_notes && /^$/ {
-            in_notes=0
-            next
-        }
-        !in_notes { print }
-        ' "$FORMULA_FILE" > "${FORMULA_FILE}.tmp" && mv "${FORMULA_FILE}.tmp" "$FORMULA_FILE"
+        if [[ -n "$RELEASE_NOTES" ]]; then
+            # Write release notes to temp file to avoid awk newline issues
+            echo "$RELEASE_NOTES" > /tmp/vinw_release_notes.txt
+
+            # Use sed to inject release notes after ASCII art
+            sed -i '' '/░░░░░    ░░░░░ ░░░░ ░░░░░    ░░░░ ░░░░/{
+                r /tmp/vinw_release_notes.txt
+                a\
+
+            }' "$FORMULA_FILE"
+
+            # Remove old release notes if they exist
+            sed -i '' '/What'\''s New in v/,/^$/d' "$FORMULA_FILE"
+
+            rm -f /tmp/vinw_release_notes.txt
+        fi
 
         # Commit and push homebrew formula
         cd "$HOMEBREW_TAP_PATH"
