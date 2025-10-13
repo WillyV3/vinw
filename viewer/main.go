@@ -38,6 +38,7 @@ var (
 
 // Messages
 type fileCheckMsg struct{}
+type themeCheckMsg struct{}
 type fileContentMsg struct {
 	path    string
 	content string
@@ -61,10 +62,11 @@ type model struct {
 }
 
 func (m model) Init() tea.Cmd {
-	// Start checking for file changes
+	// Start checking for file changes and theme changes
 	return tea.Batch(
 		m.checkFile(),
 		pollFile(),
+		pollTheme(),
 	)
 }
 
@@ -195,6 +197,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pollFile(), // Continue polling
 		)
 
+	case themeCheckMsg:
+		// Check for theme changes - runs more frequently than file polling
+		// Theme polling continues even when editor is open (lightweight operation)
+		updateThemeWithSession(m.sessionID)
+		return m, pollTheme()
+
 	case editorFinishedMsg:
 		// Editor closed - restart polling and refresh the file content
 		m.editorOpen = false
@@ -317,11 +325,16 @@ func pollFile() tea.Cmd {
 	})
 }
 
+func pollTheme() tea.Cmd {
+	// Fast polling for theme changes only - lightweight operation
+	// This ensures theme switching is instant between vinw and viewer
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return themeCheckMsg{}
+	})
+}
+
 func (m model) checkFile() tea.Cmd {
 	return func() tea.Msg {
-		// Update theme from Skate (doesn't affect file content)
-		updateThemeWithSession(m.sessionID)
-
 		// Get current file from Skate
 		filePath := getSelectedFileWithSession(m.sessionID)
 		if filePath == "" {
