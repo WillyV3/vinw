@@ -25,3 +25,7 @@ coverage.out
 *.dll
 *.so
 *.dylib
+# Orchestration artifacts
+.orchestration-logs/
+.agent-status/
+.claude/

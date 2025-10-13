@@ -86,19 +86,16 @@ func GetAllGitDiffs() map[string]int {
 		}
 	}
 
-	// Get untracked files and count their lines
+	// Get untracked files (mark as -1 to indicate new file without expensive line counting)
 	cmd = exec.Command("git", "ls-files", "--others", "--exclude-standard")
 	output, err = cmd.Output()
 	if err == nil {
 		files := strings.Split(strings.TrimSpace(string(output)), "\n")
 		for _, file := range files {
-			if file == "" {
-				continue
-			}
-			// Count all lines in untracked files
-			lineCount := countFileLines(file)
-			if lineCount > 0 {
-				diffs[file] = lineCount
+			if file != "" {
+				// Mark as -1 to indicate "new file" without counting lines
+				// This avoids expensive I/O for potentially hundreds of untracked files
+				diffs[file] = -1
 			}
 		}
 	}

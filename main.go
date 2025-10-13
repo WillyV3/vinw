@@ -330,6 +330,63 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 			}
 			return m, nil
+		case "r":
+			// Manual git refresh (fast - updates diff markers only, no tree rebuild)
+			m.diffCache = internal.GetAllGitDiffs()
+			// Re-render tree with updated diff cache but same structure
+			newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+			m.viewport.SetContent(newContent)
+			m.lastContent = newContent
+			return m, nil
+		case "R":
+			// Full refresh (slow - rebuilds entire tree + git diff)
+			m.diffCache = internal.GetAllGitDiffs()
+
+			// Remember current selection
+			var currentSelection string
+			if f, ok := m.fileMap[m.selectedLine]; ok {
+				currentSelection = f
+			} else if d, ok := m.dirMap[m.selectedLine]; ok {
+				currentSelection = d
+			}
+
+			// Rebuild entire tree
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+			m.updateTreeCache()
+
+			// Try to maintain selection
+			newSelectedLine := 0
+			if currentSelection != "" {
+				for line, file := range m.fileMap {
+					if file == currentSelection {
+						newSelectedLine = line
+						break
+					}
+				}
+				if newSelectedLine == 0 {
+					for line, dir := range m.dirMap {
+						if dir == currentSelection {
+							newSelectedLine = line
+							break
+						}
+					}
+				}
+			}
+
+			// Ensure selected line is within bounds
+			if newSelectedLine > m.maxLine {
+				newSelectedLine = m.maxLine
+			}
+			if newSelectedLine < 0 {
+				newSelectedLine = 0
+			}
+			m.selectedLine = newSelectedLine
+
+			// Update viewport
+			newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+			m.viewport.SetContent(newContent)
+			m.lastContent = newContent
+			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "t":
@@ -885,6 +942,8 @@ Navigation
   h             Toggle hidden files
   i             Toggle gitignore
   n             Toggle full nesting
+  r             Refresh git status (fast)
+  R             Full refresh (slow)
   a             Create new file
   A             Create new directory
   d             Delete file/directory
@@ -958,7 +1017,7 @@ func (m model) footerView() string {
 		nestStatus = "ON"
 	}
 	// Three lines for skinny layout
-	line1 := fmt.Sprintf("j/k: nav | ←/→: collapse/expand | h: hidden [%s]", hiddenStatus)
+	line1 := fmt.Sprintf("j/k: nav | ←/→: collapse/expand | h: hidden [%s] | r/R: refresh", hiddenStatus)
 	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
 	line3 := "a: new file | A: new dir | d: delete | c: copy path | space/enter: select | ?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
@@ -966,7 +1025,8 @@ func (m model) footerView() string {
 }
 
 func tick() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+	// Reduced frequency: manual refresh with 'r' key is preferred for performance
+	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -1109,6 +1169,10 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 			if diffLines > 0 {
 				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
 				name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
+			} else if diffLines == -1 {
+				// New untracked file (marked as -1 to avoid expensive line counting)
+				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
+				name = name + diffStyle.Render(" (new)")
 			}
 
 			t.Child(name)
@@ -1166,6 +1230,10 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 			if diffLines > 0 {
 				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
 				name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
+			} else if diffLines == -1 {
+				// New untracked file (marked as -1 to avoid expensive line counting)
+				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
+				name = name + diffStyle.Render(" (new)")
 			}
 
 			t.Child(name)
