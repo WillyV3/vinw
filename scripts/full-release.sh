@@ -244,20 +244,12 @@ main() {
         # Update caveats section with version and release notes
         # Find the ASCII art section and inject version/notes after it
         if [[ -n "$RELEASE_NOTES" ]]; then
-            # Write release notes to temp file to avoid awk newline issues
-            echo "$RELEASE_NOTES" > /tmp/vinw_release_notes.txt
+            # First, remove old "What's New" section if it exists
+            perl -i -pe 'BEGIN{undef $/;} s/\n\n      What'\''s New in v[^\n]+\n(        •[^\n]+\n)+//smg' "$FORMULA_FILE"
 
-            # Use sed to inject release notes after ASCII art
-            sed -i '' '/░░░░░    ░░░░░ ░░░░ ░░░░░    ░░░░ ░░░░/{
-                r /tmp/vinw_release_notes.txt
-                a\
-
-            }' "$FORMULA_FILE"
-
-            # Remove old release notes if they exist
-            sed -i '' '/What'\''s New in v/,/^$/d' "$FORMULA_FILE"
-
-            rm -f /tmp/vinw_release_notes.txt
+            # Find the line after the ASCII art (the blank line before "Blog:")
+            # and insert release notes there
+            perl -i -pe "s/(░░░░ ░░░░\n)/\$1$RELEASE_NOTES/g" "$FORMULA_FILE"
         fi
 
         # Commit and push homebrew formula
