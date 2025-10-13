@@ -225,12 +225,9 @@ main() {
         if [[ $BUMP_TYPE == "major" || $BUMP_TYPE == "minor" ]]; then
             print_step "Generating release notes for caveats..."
 
-            # Get commit messages since last major/minor release
-            RELEASE_NOTES=$(cat <<EOF
-
-      What's New in ${NEW_VERSION}:
-EOF
-)
+            # Build release notes header
+            RELEASE_NOTES="
+      What's New in ${NEW_VERSION}:"
 
             # Add features and fixes
             while IFS= read -r commit; do
