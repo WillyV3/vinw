@@ -1254,9 +1254,18 @@ func generateSessionID(path string) string {
 }
 
 func main() {
+	// Check for benchmark mode
+	benchmarkMode := false
+	if len(os.Args) > 1 && os.Args[1] == "--benchmark" {
+		benchmarkMode = true
+		if len(os.Args) > 2 {
+			os.Chdir(os.Args[2])
+		}
+	}
+
 	// Get watch path from args or use current directory
 	watchPath := "."
-	if len(os.Args) > 1 {
+	if len(os.Args) > 1 && os.Args[1] != "--benchmark" {
 		watchPath = os.Args[1]
 	}
 
@@ -1296,6 +1305,50 @@ func main() {
 
 	// Load gitignore
 	gitignore := internal.NewGitIgnore(watchPath)
+
+	// Benchmark mode: Run performance tests and exit
+	if benchmarkMode {
+		fmt.Fprintf(os.Stderr, "\n=== vinw Performance Benchmark ===\n")
+		fmt.Fprintf(os.Stderr, "Directory: %s\n", absPath)
+
+		// Count files
+		fileCount := 0
+		filepath.Walk(absPath, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() {
+				fileCount++
+			}
+			return nil
+		})
+		fmt.Fprintf(os.Stderr, "Total files: %d\n\n", fileCount)
+
+		// Benchmark git diff
+		start := time.Now()
+		diffCache := internal.GetAllGitDiffs()
+		gitDiffTime := time.Since(start)
+		fmt.Fprintf(os.Stderr, "Git diff time: %v\n", gitDiffTime)
+		fmt.Fprintf(os.Stderr, "Files with changes: %d\n\n", len(diffCache))
+
+		// Benchmark tree building (3 runs for average)
+		var treeTimes []time.Duration
+		for i := 0; i < 3; i++ {
+			start = time.Now()
+			_, _, _ = buildTreeWithMaps(watchPath, diffCache, gitignore, true, false, make(map[string]bool), false)
+			elapsed := time.Since(start)
+			treeTimes = append(treeTimes, elapsed)
+			fmt.Fprintf(os.Stderr, "Tree build #%d: %v\n", i+1, elapsed)
+		}
+
+		// Calculate average
+		var total time.Duration
+		for _, t := range treeTimes {
+			total += t
+		}
+		avg := total / time.Duration(len(treeTimes))
+		fmt.Fprintf(os.Stderr, "Average tree build: %v\n\n", avg)
+
+		fmt.Fprintf(os.Stderr, "=== Benchmark Complete ===\n")
+		os.Exit(0)
+	}
 
 	// Get initial git diff cache
 	initialDiffCache := internal.GetAllGitDiffs()
