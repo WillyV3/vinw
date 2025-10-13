@@ -57,6 +57,7 @@ type model struct {
 	showEditorPicker bool    // Whether to show editor selection UI
 	availableEditors []string // List of available editors
 	editorCursor     int      // Selected editor in picker
+	editorOpen       bool     // Track if editor is currently open (stops polling)
 }
 
 func (m model) Init() tea.Cmd {
@@ -115,6 +116,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					selectedEditor := m.availableEditors[m.editorCursor]
 					setEditorPreference(m.sessionID, selectedEditor)
 					m.showEditorPicker = false
+					m.editorOpen = true // Stop polling while editor is open
 					return m, openEditor(selectedEditor, m.currentFile)
 				}
 				return m, nil
@@ -124,6 +126,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "ctrl+f", "pagedown":
+			// Vim-style: page down (full screen)
+			m.viewport.ViewDown()
+			return m, nil
+		case "ctrl+b", "pageup":
+			// Vim-style: page up (full screen)
+			m.viewport.ViewUp()
+			return m, nil
+		case "ctrl+d":
+			// Vim-style: half page down
+			m.viewport.HalfViewDown()
+			return m, nil
+		case "ctrl+u":
+			// Vim-style: half page up
+			m.viewport.HalfViewUp()
+			return m, nil
 		case "r":
 			// Manual refresh
 			return m, m.checkFile()
@@ -144,6 +162,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			preferredEditor := getEditorPreference(m.sessionID)
 			if preferredEditor != "" {
 				// Use saved preference
+				m.editorOpen = true // Stop polling while editor is open
 				return m, openEditor(preferredEditor, m.currentFile)
 			}
 
@@ -155,6 +174,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if len(m.availableEditors) == 1 {
 				// Only one editor - use it directly
 				setEditorPreference(m.sessionID, m.availableEditors[0])
+				m.editorOpen = true // Stop polling while editor is open
 				return m, openEditor(m.availableEditors[0], m.currentFile)
 			}
 
@@ -165,15 +185,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case fileCheckMsg:
-		// Check for new file selection
+		// Check for new file selection (but only if editor is not open)
+		if m.editorOpen {
+			// Editor is open - skip polling to avoid terminal conflicts
+			return m, nil
+		}
 		return m, tea.Batch(
 			m.checkFile(),
 			pollFile(), // Continue polling
 		)
 
 	case editorFinishedMsg:
-		// Editor closed - refresh the file content
-		return m, m.checkFile()
+		// Editor closed - restart polling and refresh the file content
+		m.editorOpen = false
+		return m, tea.Batch(
+			m.checkFile(),
+			pollFile(), // Restart polling now that editor is closed
+		)
 
 	case fileContentMsg:
 		// Only update if something actually changed
@@ -269,7 +297,7 @@ func (m model) footerView() string {
 	}
 
 	// Two lines for skinny layout
-	line1 := fmt.Sprintf("Line %d/%d • %s",
+	line1 := fmt.Sprintf("Line %d/%d • %s • ctrl+f/b: page • ctrl+d/u: half",
 		m.viewport.YOffset+1,
 		m.viewport.TotalLineCount(),
 		scrollPercent)
@@ -282,7 +310,9 @@ func (m model) footerView() string {
 // Commands
 
 func pollFile() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+	// Reduced polling frequency to match main vinw optimizations
+	// Manual refresh with 'r' key is preferred
+	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
 		return fileCheckMsg{}
 	})
 }
