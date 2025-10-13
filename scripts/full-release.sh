@@ -220,38 +220,6 @@ main() {
         sed -i '' "s|url \".*\"|url \"${TARBALL_URL}\"|" "$FORMULA_FILE"
         sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" "$FORMULA_FILE"
 
-        # Generate release notes summary for caveats (only for major/minor releases)
-        RELEASE_NOTES=""
-        if [[ $BUMP_TYPE == "major" || $BUMP_TYPE == "minor" ]]; then
-            print_step "Generating release notes for caveats..."
-
-            # Build release notes header
-            RELEASE_NOTES="
-      What's New in ${NEW_VERSION}:"
-
-            # Add features and fixes
-            while IFS= read -r commit; do
-                # Clean up commit message and limit length
-                clean_commit=$(echo "$commit" | sed 's/^[^:]*: //' | cut -c1-60)
-                RELEASE_NOTES="${RELEASE_NOTES}
-        - ${clean_commit}"
-            done < <(git log ${CURRENT_VERSION}..HEAD --pretty=format:"%s" --no-merges | head -5)
-
-            RELEASE_NOTES="${RELEASE_NOTES}
-"
-        fi
-
-        # Update caveats section with version and release notes
-        # Find the ASCII art section and inject version/notes after it
-        if [[ -n "$RELEASE_NOTES" ]]; then
-            # First, remove old "What's New" section if it exists
-            perl -i -pe 'BEGIN{undef $/;} s/\n\n      What'\''s New in v[^\n]+\n(        [-•][^\n]+\n)+//smg' "$FORMULA_FILE"
-
-            # Find the line after the ASCII art (the blank line before "Blog:")
-            # and insert release notes there
-            perl -i -pe "s/(░░░░ ░░░░\n)/\$1$RELEASE_NOTES/g" "$FORMULA_FILE"
-        fi
-
         # Commit and push homebrew formula
         cd "$HOMEBREW_TAP_PATH"
         git add Formula/vinw.rb

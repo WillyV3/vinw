@@ -38,7 +38,6 @@ var (
 
 // Messages
 type fileCheckMsg struct{}
-type themeCheckMsg struct{}
 type fileContentMsg struct {
 	path    string
 	content string
@@ -58,15 +57,13 @@ type model struct {
 	showEditorPicker bool    // Whether to show editor selection UI
 	availableEditors []string // List of available editors
 	editorCursor     int      // Selected editor in picker
-	editorOpen       bool     // Track if editor is currently open (stops polling)
 }
 
 func (m model) Init() tea.Cmd {
-	// Start checking for file changes and theme changes
+	// Start checking for file changes
 	return tea.Batch(
 		m.checkFile(),
 		pollFile(),
-		pollTheme(),
 	)
 }
 
@@ -118,7 +115,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					selectedEditor := m.availableEditors[m.editorCursor]
 					setEditorPreference(m.sessionID, selectedEditor)
 					m.showEditorPicker = false
-					m.editorOpen = true // Stop polling while editor is open
 					return m, openEditor(selectedEditor, m.currentFile)
 				}
 				return m, nil
@@ -128,22 +124,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "ctrl+f", "pagedown":
-			// Vim-style: page down (full screen)
-			m.viewport.ViewDown()
-			return m, nil
-		case "ctrl+b", "pageup":
-			// Vim-style: page up (full screen)
-			m.viewport.ViewUp()
-			return m, nil
-		case "ctrl+d":
-			// Vim-style: half page down
-			m.viewport.HalfViewDown()
-			return m, nil
-		case "ctrl+u":
-			// Vim-style: half page up
-			m.viewport.HalfViewUp()
-			return m, nil
 		case "r":
 			// Manual refresh
 			return m, m.checkFile()
@@ -164,7 +144,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			preferredEditor := getEditorPreference(m.sessionID)
 			if preferredEditor != "" {
 				// Use saved preference
-				m.editorOpen = true // Stop polling while editor is open
 				return m, openEditor(preferredEditor, m.currentFile)
 			}
 
@@ -176,7 +155,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if len(m.availableEditors) == 1 {
 				// Only one editor - use it directly
 				setEditorPreference(m.sessionID, m.availableEditors[0])
-				m.editorOpen = true // Stop polling while editor is open
 				return m, openEditor(m.availableEditors[0], m.currentFile)
 			}
 
@@ -187,29 +165,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case fileCheckMsg:
-		// Check for new file selection (but only if editor is not open)
-		if m.editorOpen {
-			// Editor is open - skip polling to avoid terminal conflicts
-			return m, nil
-		}
+		// Check for new file selection
 		return m, tea.Batch(
 			m.checkFile(),
 			pollFile(), // Continue polling
 		)
 
-	case themeCheckMsg:
-		// Check for theme changes - runs more frequently than file polling
-		// Theme polling continues even when editor is open (lightweight operation)
-		updateThemeWithSession(m.sessionID)
-		return m, pollTheme()
-
 	case editorFinishedMsg:
-		// Editor closed - restart polling and refresh the file content
-		m.editorOpen = false
-		return m, tea.Batch(
-			m.checkFile(),
-			pollFile(), // Restart polling now that editor is closed
-		)
+		// Editor closed - refresh the file content
+		return m, m.checkFile()
 
 	case fileContentMsg:
 		// Only update if something actually changed
@@ -305,7 +269,7 @@ func (m model) footerView() string {
 	}
 
 	// Two lines for skinny layout
-	line1 := fmt.Sprintf("Line %d/%d • %s • ctrl+f/b: page • ctrl+d/u: half",
+	line1 := fmt.Sprintf("Line %d/%d • %s",
 		m.viewport.YOffset+1,
 		m.viewport.TotalLineCount(),
 		scrollPercent)
@@ -318,23 +282,16 @@ func (m model) footerView() string {
 // Commands
 
 func pollFile() tea.Cmd {
-	// Reduced polling frequency to match main vinw optimizations
-	// Manual refresh with 'r' key is preferred
-	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return fileCheckMsg{}
-	})
-}
-
-func pollTheme() tea.Cmd {
-	// Fast polling for theme changes only - lightweight operation
-	// This ensures theme switching is instant between vinw and viewer
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-		return themeCheckMsg{}
 	})
 }
 
 func (m model) checkFile() tea.Cmd {
 	return func() tea.Msg {
+		// Update theme from Skate (doesn't affect file content)
+		updateThemeWithSession(m.sessionID)
+
 		// Get current file from Skate
 		filePath := getSelectedFileWithSession(m.sessionID)
 		if filePath == "" {
