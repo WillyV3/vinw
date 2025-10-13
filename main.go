@@ -508,7 +508,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "h":
-			// Toggle hidden files and folders
+			// Vim-style left: collapse directory (same as 'left' key)
+			if !m.nestingEnabled {
+				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+					// Mark directory as collapsed
+					delete(m.expandedDirs, dirPath)
+
+					// Remember current selection
+					var currentSelection string
+					if f, ok := m.fileMap[m.selectedLine]; ok {
+						currentSelection = f
+					} else if d, ok := m.dirMap[m.selectedLine]; ok {
+						currentSelection = d
+					}
+
+					// Rebuild tree with new expansion
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+					m.updateTreeCache()
+
+					// Try to maintain selection
+					newSelectedLine := m.selectedLine
+					if currentSelection != "" {
+						for line, file := range m.fileMap {
+							if file == currentSelection {
+								newSelectedLine = line
+								break
+							}
+						}
+						// Also check dirMap if not found in fileMap
+						if newSelectedLine == m.selectedLine {
+							for line, dir := range m.dirMap {
+								if dir == currentSelection {
+									newSelectedLine = line
+									break
+								}
+							}
+						}
+					}
+
+					// Ensure selected line is within bounds
+					if newSelectedLine > m.maxLine {
+						newSelectedLine = m.maxLine
+					}
+					if newSelectedLine < 0 {
+						newSelectedLine = 0
+					}
+					m.selectedLine = newSelectedLine
+
+					// Update viewport
+					newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+					m.viewport.SetContent(newContent)
+					m.lastContent = newContent
+				}
+			}
+			return m, nil
+		case "u":
+			// Toggle hidden/unhidden files and folders
 			m.showHidden = !m.showHidden
 
 			// Remember the currently selected file if one exists
@@ -547,7 +602,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastContent = newContent
 			return m, nil
 		case "right", "l":
-			// Expand directory when nesting is disabled
+			// Vim-style expand directory (l) or arrow key (→)
 			if !m.nestingEnabled {
 				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
 					// Mark directory as expanded
@@ -932,14 +987,14 @@ Setup
   Terminal 1    vinw
   Terminal 2    vinw-viewer
 
-Navigation
-──────────
+Navigation (Vim-style)
+──────────────────────
   j, ↓          Move down
   k, ↑          Move up
-  ←             Collapse directory
-  →             Expand directory
+  h, ←          Collapse directory
+  l, →          Expand directory
   Space/Enter   Select file to view
-  h             Toggle hidden files
+  u             Toggle hidden files
   i             Toggle gitignore
   n             Toggle full nesting
   r             Refresh git status (fast)
@@ -1017,7 +1072,7 @@ func (m model) footerView() string {
 		nestStatus = "ON"
 	}
 	// Three lines for skinny layout
-	line1 := fmt.Sprintf("j/k: nav | ←/→: collapse/expand | h: hidden [%s] | r/R: refresh", hiddenStatus)
+	line1 := fmt.Sprintf("j/k: nav | h/l: collapse/expand | u: hidden [%s] | r/R: refresh", hiddenStatus)
 	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
 	line3 := "a: new file | A: new dir | d: delete | c: copy path | space/enter: select | ?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
