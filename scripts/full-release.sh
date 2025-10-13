@@ -220,6 +220,55 @@ main() {
         sed -i '' "s|url \".*\"|url \"${TARBALL_URL}\"|" "$FORMULA_FILE"
         sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" "$FORMULA_FILE"
 
+        # Generate release notes summary for caveats (only for major/minor releases)
+        RELEASE_NOTES=""
+        if [[ $BUMP_TYPE == "major" || $BUMP_TYPE == "minor" ]]; then
+            print_step "Generating release notes for caveats..."
+
+            # Get commit messages since last major/minor release
+            RELEASE_NOTES=$(cat <<EOF
+
+      What's New in ${NEW_VERSION}:
+EOF
+)
+
+            # Add features and fixes
+            while IFS= read -r commit; do
+                # Clean up commit message and limit length
+                clean_commit=$(echo "$commit" | sed 's/^[^:]*: //' | cut -c1-60)
+                RELEASE_NOTES="${RELEASE_NOTES}
+        • ${clean_commit}"
+            done < <(git log ${CURRENT_VERSION}..HEAD --pretty=format:"%s" --no-merges | head -5)
+
+            RELEASE_NOTES="${RELEASE_NOTES}
+"
+        fi
+
+        # Update caveats section with version and release notes
+        # Find the ASCII art section and inject version/notes after it
+        awk -v version="$NEW_VERSION" -v notes="$RELEASE_NOTES" '
+        /░░░░░    ░░░░░ ░░░░ ░░░░░    ░░░░ ░░░░/ {
+            print
+            if (notes != "") {
+                print notes
+            }
+            next
+        }
+        # Skip old "Whats New" section if it exists
+        /What'\''s New in v/ {
+            in_notes=1
+            next
+        }
+        in_notes && /^      [A-Z]/ {
+            next
+        }
+        in_notes && /^$/ {
+            in_notes=0
+            next
+        }
+        !in_notes { print }
+        ' "$FORMULA_FILE" > "${FORMULA_FILE}.tmp" && mv "${FORMULA_FILE}.tmp" "$FORMULA_FILE"
+
         # Commit and push homebrew formula
         cd "$HOMEBREW_TAP_PATH"
         git add Formula/vinw.rb
