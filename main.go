@@ -43,6 +43,51 @@ var (
 type tickMsg time.Time
 type clearCopyHintMsg struct{}
 
+// Symlink support - track visited paths to prevent infinite loops
+type visitedPaths struct {
+	paths map[string]bool
+}
+
+func newVisitedPaths() *visitedPaths {
+	return &visitedPaths{
+		paths: make(map[string]bool),
+	}
+}
+
+func (v *visitedPaths) visit(path string) bool {
+	// Resolve to canonical path to detect loops
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// If we can't resolve, treat as unvisited (might be broken symlink)
+		canonical = path
+	}
+
+	if v.paths[canonical] {
+		return false // Already visited (loop detected)
+	}
+	v.paths[canonical] = true
+	return true
+}
+
+// Symlink helper functions
+func isSymlink(entry os.DirEntry) bool {
+	return entry.Type()&os.ModeSymlink != 0
+}
+
+func getSymlinkTarget(fullPath string) (string, error) {
+	return os.Readlink(fullPath)
+}
+
+func isSymlinkToDir(fullPath string) (bool, bool, error) {
+	// Use Stat (follows symlink) to check target
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		// Broken symlink
+		return false, true, err
+	}
+	return info.IsDir(), false, nil
+}
+
 // Creation modes
 type creationMode int
 
@@ -1013,6 +1058,14 @@ Git Features
   • Works without remote repos
   • Auto-creates GitHub repos
 
+Symlinks
+────────
+  • Symlinks shown with → indicator
+  • Cyan color for symlinks
+  • Navigate symlinked dirs like normal
+  • Broken symlinks shown in red
+  • Loop detection prevents hangs
+
 Press any key to dismiss...`
 
 		helpStyle := lipgloss.NewStyle().
@@ -1105,7 +1158,8 @@ func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *
 func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
 	lineNum := 1 // Start at 1 because the root directory takes line 0
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), false, &lineNum, fileMap, nil)
+	visited := newVisitedPaths() // Track visited paths for symlink loop detection
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), false, &lineNum, fileMap, nil, visited, 0)
 	return t, fileMap
 }
 
@@ -1114,7 +1168,8 @@ func buildTreeWithMaps(rootPath string, diffCache map[string]int, gitignore *int
 	fileMap := make(map[int]string)
 	dirMap := make(map[int]string)
 	lineNum := 1 // Start at 1 because the root directory takes line 0
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, &lineNum, fileMap, dirMap)
+	visited := newVisitedPaths() // Track visited paths for symlink loop detection
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, &lineNum, fileMap, dirMap, visited, 0)
 	return t, fileMap, dirMap
 }
 
@@ -1150,9 +1205,25 @@ func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
 	return strings.Join(result, "\n")
 }
 
-func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool, lineNum *int, fileMap map[int]string, dirMap map[int]string) *tree.Tree {
+func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool, lineNum *int, fileMap map[int]string, dirMap map[int]string, visited *visitedPaths, depth int) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
+
+	// Check max depth (prevent extremely deep symlink chains)
+	const maxDepth = 10
+	if depth > maxDepth {
+		warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("yellow"))
+		t.Child(warningStyle.Render("⚠ Max depth reached"))
+		return t
+	}
+
+	// Check for loops
+	if !visited.visit(path) {
+		// Loop detected
+		warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("yellow"))
+		t.Child(warningStyle.Render("⚠ Symlink loop detected"))
+		return t
+	}
 
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -1184,6 +1255,134 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 			continue
 		}
 
+		// Check if this is a symlink
+		isSymlinkEntry := isSymlink(entry)
+
+		if isSymlinkEntry {
+			// Handle symlinks specially
+			targetIsDir, isBroken, err := isSymlinkToDir(fullPath)
+
+			if isBroken || err != nil {
+				// Broken symlink - show in red
+				brokenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("red"))
+				displayName := entryName + " → (broken)"
+				t.Child(brokenStyle.Render(displayName))
+				*lineNum++
+				continue
+			}
+
+			// Get symlink target for display
+			targetPath, _ := getSymlinkTarget(fullPath)
+			symlinkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("cyan"))
+
+			if targetIsDir {
+				// Symlinked directory
+				displayName := entryName + " → " + targetPath + "/"
+
+				// Track in dirMap
+				if dirMap != nil {
+					dirMap[*lineNum] = relPath
+				}
+				*lineNum++
+
+				// Allow expansion like normal directories
+				shouldExpand := nestingEnabled || (expandedDirs != nil && expandedDirs[relPath])
+
+				if shouldExpand {
+					// Recursively build (with loop protection and increased depth)
+					subTree := buildTreeRecursiveWithMap(
+						fullPath, relPath, diffCache, gitignore,
+						respectIgnore, nestingEnabled, expandedDirs,
+						showHidden, lineNum, fileMap, dirMap, visited, depth+1,
+					)
+					// Style the root with symlink indicator
+					styledRoot := symlinkStyle.Render(displayName)
+					subTree = tree.Root(styledRoot)
+
+					// Re-scan and add children
+					subEntries, err := os.ReadDir(fullPath)
+					if err == nil {
+						for _, subEntry := range subEntries {
+							subFullPath := filepath.Join(fullPath, subEntry.Name())
+							subRelPath := filepath.Join(relPath, subEntry.Name())
+
+							if subEntry.Name() == ".git" {
+								continue
+							}
+
+							subIsHidden := strings.HasPrefix(subEntry.Name(), ".")
+							if subIsHidden && subEntry.Name() != ".gitignore" && !showHidden {
+								continue
+							}
+
+							if respectIgnore && gitignore != nil && gitignore.IsIgnored(subFullPath) {
+								continue
+							}
+
+							if subEntry.IsDir() || (isSymlink(subEntry) && func() bool { isDir, _, _ := isSymlinkToDir(subFullPath); return isDir }()) {
+								subTreeChild := buildTreeRecursiveWithMap(
+									subFullPath, subRelPath, diffCache, gitignore,
+									respectIgnore, nestingEnabled, expandedDirs,
+									showHidden, lineNum, fileMap, dirMap, visited, depth+1,
+								)
+								subTree.Child(subTreeChild)
+							} else {
+								// File handling
+								fileMap[*lineNum] = subRelPath
+								*lineNum++
+
+								var diffLines int
+								if diffCache != nil {
+									diffLines = diffCache[subRelPath]
+								}
+
+								fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+								name := fileStyle.Render(subEntry.Name())
+
+								if diffLines > 0 {
+									diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+									name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
+								} else if diffLines == -1 {
+									diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+									name = name + diffStyle.Render(" (new)")
+								}
+
+								subTree.Child(name)
+							}
+						}
+					}
+					t.Child(subTree)
+				} else {
+					// Collapsed symlinked directory
+					t.Child(symlinkStyle.Render(displayName))
+				}
+			} else {
+				// Symlinked file
+				displayName := entryName + " → " + targetPath
+				fileMap[*lineNum] = relPath
+				*lineNum++
+
+				// Check for git diff on symlinked file
+				var diffLines int
+				if diffCache != nil {
+					diffLines = diffCache[relPath]
+				}
+
+				name := symlinkStyle.Render(displayName)
+				if diffLines > 0 {
+					diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+					name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
+				} else if diffLines == -1 {
+					diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+					name = name + diffStyle.Render(" (new)")
+				}
+
+				t.Child(name)
+			}
+			continue
+		}
+
+		// Regular file or directory (not a symlink)
 		if entry.IsDir() {
 			// Track directory in dirMap at current line
 			if dirMap != nil {
@@ -1196,7 +1395,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 
 			if shouldExpand {
 				// Recursively build subtree - showHidden MUST be passed through
-				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, lineNum, fileMap, dirMap)
+				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, lineNum, fileMap, dirMap, visited, depth+1)
 				t.Child(subTree)
 			} else {
 				// Show collapsed directory (including hidden directories when showHidden is true)
