@@ -1,6 +1,6 @@
 module vinw-viewer
 
-go 1.25.1
+go 1.25.3
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0
@@ -31,6 +31,7 @@ require (
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/willyv3/gogh-themes v1.2.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.8 // indirect
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect

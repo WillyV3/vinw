@@ -10,34 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
-)
-
-// Styles
-var (
-	// titleStyle will be dynamically created based on theme
-	titleStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("30")). // Default to Teal theme
-			Foreground(lipgloss.Color("230")).
-			Bold(true).
-			Padding(0, 1)
-
-	infoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
-	lineNumberStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("239")).
-			MarginRight(1)
+	lipglossthemes "github.com/willyv3/gogh-themes/lipgloss"
 )
 
 // Messages
 type fileCheckMsg struct{}
+type themeUpdateMsg struct {
+	theme lipglossthemes.Theme
+	name  string
+}
 type fileContentMsg struct {
 	path    string
 	content string
@@ -52,16 +39,20 @@ type model struct {
 	ready           bool
 	width           int
 	height          int
-	sessionID       string   // Session ID for Skate isolation
-	mouseEnabled    bool     // Toggle for mouse mode
-	showEditorPicker bool    // Whether to show editor selection UI
-	availableEditors []string // List of available editors
-	editorCursor     int      // Selected editor in picker
+	sessionID       string                 // Session ID for Skate isolation
+	mouseEnabled    bool                   // Toggle for mouse mode
+	showEditorPicker bool                  // Whether to show editor selection UI
+	availableEditors []string              // List of available editors
+	editorCursor     int                    // Selected editor in picker
+	currentTheme    lipglossthemes.Theme   // Current theme from gogh-themes
+	themeName       string                 // Current theme name
+	chromaStyle     *chroma.Style          // Pre-built chroma style for syntax highlighting
 }
 
 func (m model) Init() tea.Cmd {
-	// Start checking for file changes
+	// Start checking for file and theme changes
 	return tea.Batch(
+		m.checkTheme(),
 		m.checkFile(),
 		pollFile(),
 	)
@@ -164,9 +155,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+	case themeUpdateMsg:
+		// Theme changed - rebuild chroma style and re-process content
+		m.currentTheme = msg.theme
+		m.themeName = msg.name
+		m.chromaStyle = buildChromaStyle(msg.theme, msg.name)
+
+		// Re-process current file content with new theme colors
+		if m.currentFile != "" && m.content != "" {
+			processedContent := processFileContent(m.currentFile, m.content, m.width, m.currentTheme, m.chromaStyle)
+			m.viewport.SetContent(processedContent)
+		}
+
+		return m, nil
+
 	case fileCheckMsg:
-		// Check for new file selection
+		// Check for new file selection and theme updates
 		return m, tea.Batch(
+			m.checkTheme(),
 			m.checkFile(),
 			pollFile(), // Continue polling
 		)
@@ -194,8 +200,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentFile = msg.path
 			m.content = msg.content
 
-			// Process content based on file type
-			processedContent := processFileContent(msg.path, msg.content, m.width)
+			// Process content based on file type using pre-built chroma style
+			processedContent := processFileContent(msg.path, msg.content, m.width, m.currentTheme, m.chromaStyle)
 
 			m.viewport.SetContent(processedContent)
 			m.viewport.GotoTop()
@@ -257,6 +263,15 @@ func (m model) headerView() string {
 	if m.currentFile != "" {
 		title = fmt.Sprintf("ⓋⒾⓃⓌ ⓋⒾⒺⓌⒺⓇ • %s", filepath.Base(m.currentFile))
 	}
+
+	// Use Foreground on Background for guaranteed contrast
+	// These two colors are designed to work together in every theme
+	titleStyle := lipgloss.NewStyle().
+		Background(m.currentTheme.Background).
+		Foreground(m.currentTheme.Foreground).
+		Bold(true).
+		Padding(0, 1)
+
 	return titleStyle.Width(m.width).Render(title)
 }
 
@@ -276,6 +291,10 @@ func (m model) footerView() string {
 	line2 := fmt.Sprintf("e: edit • m: mouse [%s] • r: refresh • q: quit", mouseStatus)
 	info := line1 + "\n" + line2
 
+	// Use theme's Foreground for good contrast with terminal background
+	infoStyle := lipgloss.NewStyle().
+		Foreground(m.currentTheme.Foreground)
+
 	return infoStyle.Width(m.width).Render(info)
 }
 
@@ -287,11 +306,30 @@ func pollFile() tea.Cmd {
 	})
 }
 
+func (m model) checkTheme() tea.Cmd {
+	return func() tea.Msg {
+		// Read theme name from Skate
+		cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-name@%s", m.sessionID))
+		nameBytes, _ := cmd.Output()
+		themeName := strings.TrimSpace(string(nameBytes))
+
+		// Only send update if theme actually changed
+		if themeName != "" && themeName != m.themeName {
+			if theme, ok := lipglossthemes.Get(themeName); ok {
+				return themeUpdateMsg{
+					theme: theme,
+					name:  themeName,
+				}
+			}
+		}
+
+		// No change - return nil (no-op)
+		return nil
+	}
+}
+
 func (m model) checkFile() tea.Cmd {
 	return func() tea.Msg {
-		// Update theme from Skate (doesn't affect file content)
-		updateThemeWithSession(m.sessionID)
-
 		// Get current file from Skate
 		filePath := getSelectedFileWithSession(m.sessionID)
 		if filePath == "" {
@@ -312,50 +350,6 @@ func (m model) checkFile() tea.Cmd {
 	}
 }
 
-// Track current theme to avoid unnecessary updates
-var (
-	currentBg = ""
-	currentFg = ""
-)
-
-// updateThemeWithSession updates the title style based on current theme with session
-func updateThemeWithSession(sessionID string) {
-	// Simple sequential reads - NO parallelization, NO goroutines, NO data races
-	cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-bg@%s", sessionID))
-	bgBytes, _ := cmd.Output()
-	bg := strings.TrimSpace(string(bgBytes))
-
-	cmd = exec.Command("skate", "get", fmt.Sprintf("vinw-theme-fg@%s", sessionID))
-	fgBytes, _ := cmd.Output()
-	fg := strings.TrimSpace(string(fgBytes))
-
-	// Only update if we got VALID values (not empty)
-	// This prevents flashing to default during background writes
-	if bg != "" && fg != "" {
-		// Got valid theme values - update if changed
-		if bg != currentBg || fg != currentFg {
-			currentBg = bg
-			currentFg = fg
-
-			// Update title style with theme colors
-			titleStyle = lipgloss.NewStyle().
-				Background(lipgloss.Color(bg)).
-				Foreground(lipgloss.Color(fg)).
-				Bold(true).
-				Padding(0, 1)
-		}
-	} else if currentBg == "" && currentFg == "" {
-		// First time and no values in skate - use defaults
-		currentBg = "30"  // Teal from theme.go
-		currentFg = "230"
-		titleStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color(currentBg)).
-			Foreground(lipgloss.Color(currentFg)).
-			Bold(true).
-			Padding(0, 1)
-	}
-	// Otherwise: got empty values but have a current theme - keep it (do nothing)
-}
 
 // Editor helper functions
 
@@ -456,30 +450,51 @@ func isMarkdown(path string) bool {
 	return ext == ".md" || ext == ".markdown" || ext == ".mdown"
 }
 
-func processFileContent(path string, content string, width int) string {
-	if isMarkdown(path) {
-		// Render markdown with glamour using dracula theme
-		renderer, err := glamour.NewTermRenderer(
-			glamour.WithStylePath("dracula"),
-			glamour.WithWordWrap(width),
-		)
-		if err != nil {
-			// Fall back to auto style if dracula not available
-			renderer, err = glamour.NewTermRenderer(
-				glamour.WithAutoStyle(),
-				glamour.WithWordWrap(width),
-			)
-			if err != nil {
-				return content
-			}
-		}
+// buildChromaStyle creates a dynamic chroma style from the theme's 16 ANSI colors
+func buildChromaStyle(theme lipglossthemes.Theme, themeName string) *chroma.Style {
+	// Convert lipgloss.Color to hex strings for chroma
+	bg := string(theme.Background)
+	fg := string(theme.Foreground)
 
-		rendered, err := renderer.Render(content)
-		if err != nil {
-			return content
-		}
-		return rendered
-	} else if isCodeFile(path) {
+	// Use theme name in style name to avoid chroma caching the same style
+	styleName := "vinw-" + themeName
+
+	// Build chroma style entries mapping token types to theme colors
+	return chroma.MustNewStyle(styleName, chroma.StyleEntries{
+		chroma.Background:      bg,
+		chroma.Text:            fg,
+		chroma.Error:           string(theme.BrightRed),
+		chroma.Comment:         string(theme.BrightBlack),
+		chroma.CommentPreproc:  string(theme.Cyan),
+		chroma.Keyword:         string(theme.Magenta),
+		chroma.KeywordType:     string(theme.Blue),
+		chroma.Operator:        string(theme.Magenta),
+		chroma.Punctuation:     fg,
+		chroma.Name:            fg,
+		chroma.NameBuiltin:     string(theme.Yellow),
+		chroma.NameFunction:    string(theme.Yellow),
+		chroma.NameClass:       string(theme.Blue),
+		chroma.NameNamespace:   string(theme.Cyan),
+		chroma.NameException:   string(theme.Red),
+		chroma.NameVariable:    string(theme.Cyan),
+		chroma.NameConstant:    string(theme.BrightYellow),
+		chroma.NameAttribute:   string(theme.Cyan),
+		chroma.NameTag:         string(theme.Magenta),
+		chroma.LiteralString:   string(theme.Green),
+		chroma.LiteralNumber:   string(theme.Cyan),
+		chroma.Literal:         string(theme.Green),
+		chroma.LiteralDate:     string(theme.Green),
+		chroma.Generic:         fg,
+		chroma.GenericDeleted:  string(theme.Red),
+		chroma.GenericEmph:     fg + " italic",
+		chroma.GenericInserted: string(theme.Green),
+		chroma.GenericStrong:   fg + " bold",
+		chroma.GenericHeading:  string(theme.BrightCyan) + " bold",
+	})
+}
+
+func processFileContent(path string, content string, width int, theme lipglossthemes.Theme, chromaStyle *chroma.Style) string {
+	if isCodeFile(path) || isMarkdown(path) {
 		// Syntax highlight code files
 		// Get lexer for the file type
 		lexer := lexers.Match(path)
@@ -490,61 +505,50 @@ func processFileContent(path string, content string, width int) string {
 		}
 		if lexer == nil {
 			// If no lexer found, just add line numbers
-			return addLineNumbers(content)
+			return addLineNumbers(content, theme)
 		}
 
-		// Get style - try Dracula first, then Monokai
-		style := styles.Get("dracula")
-		if style == nil {
-			style = styles.Get("monokai")
-		}
-		if style == nil {
-			style = styles.Get("github-dark")
-		}
-		if style == nil {
-			// Fall back to a default style
-			style = styles.Fallback
-		}
+		// Use our dynamically built style with actual theme colors
+		style := chromaStyle
 
-		// Get formatter
+		// Get formatter - use terminal16m for true color support
 		formatter := formatters.Get("terminal16m")
-		if formatter == nil {
-			formatter = formatters.Get("terminal256")
-		}
-		if formatter == nil {
-			formatter = formatters.Get("terminal")
-		}
 
 		// Tokenize the content
 		tokens, err := lexer.Tokenise(nil, content)
 		if err != nil {
-			return addLineNumbers(content)
+			return addLineNumbers(content, theme)
 		}
 
 		// Format the tokens
 		var buf bytes.Buffer
 		err = formatter.Format(&buf, style, tokens)
 		if err != nil {
-			return addLineNumbers(content)
+			return addLineNumbers(content, theme)
 		}
 
 		// Add line numbers to the highlighted content
 		highlighted := buf.String()
 		if highlighted == "" || highlighted == content {
 			// If no actual highlighting happened, just add line numbers
-			return addLineNumbers(content)
+			return addLineNumbers(content, theme)
 		}
-		return addLineNumbers(highlighted)
+		return addLineNumbers(highlighted, theme)
 	}
 
 	// For other files, just return as-is
 	return content
 }
 
-func addLineNumbers(content string) string {
+func addLineNumbers(content string, theme lipglossthemes.Theme) string {
 	lines := strings.Split(content, "\n")
 	maxLineNum := len(lines)
 	width := len(fmt.Sprintf("%d", maxLineNum))
+
+	// Create line number style from theme
+	lineNumberStyle := lipgloss.NewStyle().
+		Foreground(theme.BrightBlack).
+		MarginRight(1)
 
 	var result strings.Builder
 	for i, line := range lines {
@@ -574,13 +578,39 @@ func main() {
 	fmt.Println("Waiting for file selection from vinw...")
 	fmt.Println()
 
-	// Initialize theme on startup with session
-	updateThemeWithSession(sessionID)
+	// Initialize theme on startup - try to load from Skate, fallback to Dracula
+	var initialTheme lipglossthemes.Theme
+	var initialThemeName string
+
+	cmd := exec.Command("skate", "get", fmt.Sprintf("vinw-theme-name@%s", sessionID))
+	nameBytes, _ := cmd.Output()
+	themeName := strings.TrimSpace(string(nameBytes))
+
+	if themeName != "" {
+		if theme, ok := lipglossthemes.Get(themeName); ok {
+			initialTheme = theme
+			initialThemeName = themeName
+		}
+	}
+
+	// Fallback to Dracula if no theme found
+	if initialThemeName == "" {
+		if theme, ok := lipglossthemes.Get("Dracula"); ok {
+			initialTheme = theme
+			initialThemeName = "Dracula"
+		}
+	}
+
+	// Build initial chroma style
+	initialChromaStyle := buildChromaStyle(initialTheme, initialThemeName)
 
 	p := tea.NewProgram(
 		model{
 			sessionID:    sessionID,
 			mouseEnabled: true, // Start with mouse enabled for scrolling
+			currentTheme: initialTheme,
+			themeName:    initialThemeName,
+			chromaStyle:  initialChromaStyle,
 		},
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),

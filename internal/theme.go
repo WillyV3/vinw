@@ -3,239 +3,215 @@ package internal
 import (
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	lipglossthemes "github.com/willyv3/gogh-themes/lipgloss"
 )
 
-// Theme represents a color theme
-type Theme struct {
-	Name        string
-	HeaderBG    lipgloss.Color
-	HeaderFG    lipgloss.Color
-	Description string
-}
-
-// Available themes with muted, professional colors
-var Themes = []Theme{
-	{
-		Name:        "Teal",
-		HeaderBG:    lipgloss.Color("30"),   // Muted teal
-		HeaderFG:    lipgloss.Color("230"),  // Light text
-		Description: "Calm teal",
-	},
-	{
-		Name:        "Purple",
-		HeaderBG:    lipgloss.Color("54"),   // Muted purple
-		HeaderFG:    lipgloss.Color("230"),
-		Description: "Subtle purple",
-	},
-	{
-		Name:        "Blue",
-		HeaderBG:    lipgloss.Color("25"),   // Muted blue
-		HeaderFG:    lipgloss.Color("230"),
-		Description: "Classic blue",
-	},
-	{
-		Name:        "Orange",
-		HeaderBG:    lipgloss.Color("130"),  // Muted orange
-		HeaderFG:    lipgloss.Color("230"),
-		Description: "Warm orange",
-	},
-	{
-		Name:        "Burnt",
-		HeaderBG:    lipgloss.Color("94"),   // Burnt orange/brown
-		HeaderFG:    lipgloss.Color("230"),
-		Description: "Burnt sienna",
-	},
-	{
-		Name:        "Slate",
-		HeaderBG:    lipgloss.Color("240"),  // Slate gray
-		HeaderFG:    lipgloss.Color("252"),
-		Description: "Professional slate",
-	},
-	{
-		Name:        "Forest",
-		HeaderBG:    lipgloss.Color("22"),   // Forest green
-		HeaderFG:    lipgloss.Color("230"),
-		Description: "Forest green",
-	},
-	{
-		Name:        "Mauve",
-		HeaderBG:    lipgloss.Color("96"),   // Muted mauve
-		HeaderFG:    lipgloss.Color("230"),
-		Description: "Soft mauve",
-	},
-}
-
-// ThemeManager manages the current theme
+// ThemeManager manages the current theme from gogh-themes
 type ThemeManager struct {
-	CurrentIndex int
-	Current      Theme
-	SessionID    string // Session ID for Skate isolation
+	CurrentName string                // Current theme name
+	Current     lipglossthemes.Theme  // Full theme with 16 colors as lipgloss.Color
+	AllNames    []string              // All 361 theme names
+	SessionID   string                // Session ID for Skate isolation
 }
 
 // NewThemeManager creates a new theme manager
 func NewThemeManager() *ThemeManager {
+	allNames := lipglossthemes.Names()
+
 	// Try to load saved theme from Skate
-	savedIndex := GetSavedTheme()
-	if savedIndex >= 0 && savedIndex < len(Themes) {
-		return &ThemeManager{
-			CurrentIndex: savedIndex,
-			Current:      Themes[savedIndex],
+	savedName := GetSavedTheme()
+	if savedName != "" {
+		if theme, ok := lipglossthemes.Get(savedName); ok {
+			return &ThemeManager{
+				CurrentName: savedName,
+				Current:     theme,
+				AllNames:    allNames,
+			}
 		}
 	}
 
-	// Default to first theme
+	// Default to Dracula
+	theme, _ := lipglossthemes.Get("Dracula")
 	return &ThemeManager{
-		CurrentIndex: 0,
-		Current:      Themes[0],
+		CurrentName: "Dracula",
+		Current:     theme,
+		AllNames:    allNames,
 	}
 }
 
 // NewThemeManagerWithSession creates a new theme manager with a session ID
 func NewThemeManagerWithSession(sessionID string) *ThemeManager {
+	allNames := lipglossthemes.Names()
+
 	// Try to load saved theme from Skate with session
-	savedIndex := GetSavedThemeWithSession(sessionID)
-	if savedIndex >= 0 && savedIndex < len(Themes) {
-		return &ThemeManager{
-			CurrentIndex: savedIndex,
-			Current:      Themes[savedIndex],
-			SessionID:    sessionID,
+	savedName := GetSavedThemeWithSession(sessionID)
+	if savedName != "" {
+		if theme, ok := lipglossthemes.Get(savedName); ok {
+			return &ThemeManager{
+				CurrentName: savedName,
+				Current:     theme,
+				AllNames:    allNames,
+				SessionID:   sessionID,
+			}
 		}
 	}
 
-	// Default to first theme
+	// Default to Dracula
+	theme, _ := lipglossthemes.Get("Dracula")
 	return &ThemeManager{
-		CurrentIndex: 0,
-		Current:      Themes[0],
-		SessionID:    sessionID,
+		CurrentName: "Dracula",
+		Current:     theme,
+		AllNames:    allNames,
+		SessionID:   sessionID,
 	}
 }
 
 // NextTheme cycles to the next theme
 func (tm *ThemeManager) NextTheme() {
-	tm.CurrentIndex = (tm.CurrentIndex + 1) % len(Themes)
-	tm.Current = Themes[tm.CurrentIndex]
+	// Find current index
+	currentIdx := 0
+	for i, name := range tm.AllNames {
+		if name == tm.CurrentName {
+			currentIdx = i
+			break
+		}
+	}
 
-	// Run save and broadcast in single goroutine to avoid skate lock contention
-	go func() {
-		tm.SaveTheme()
-		tm.BroadcastTheme()
-	}()
+	// Cycle to next
+	nextIdx := (currentIdx + 1) % len(tm.AllNames)
+	tm.CurrentName = tm.AllNames[nextIdx]
+	theme, _ := lipglossthemes.Get(tm.CurrentName)
+	tm.Current = theme
+
+	// Save theme to Skate (non-blocking)
+	go tm.SaveTheme()
 }
 
 // PreviousTheme cycles to the previous theme
 func (tm *ThemeManager) PreviousTheme() {
-	tm.CurrentIndex--
-	if tm.CurrentIndex < 0 {
-		tm.CurrentIndex = len(Themes) - 1
+	// Find current index
+	currentIdx := 0
+	for i, name := range tm.AllNames {
+		if name == tm.CurrentName {
+			currentIdx = i
+			break
+		}
 	}
-	tm.Current = Themes[tm.CurrentIndex]
 
-	// Run save and broadcast in single goroutine to avoid skate lock contention
-	go func() {
-		tm.SaveTheme()
-		tm.BroadcastTheme()
-	}()
+	// Cycle to previous
+	prevIdx := currentIdx - 1
+	if prevIdx < 0 {
+		prevIdx = len(tm.AllNames) - 1
+	}
+	tm.CurrentName = tm.AllNames[prevIdx]
+	theme, _ := lipglossthemes.Get(tm.CurrentName)
+	tm.Current = theme
+
+	// Save theme to Skate (non-blocking)
+	go tm.SaveTheme()
 }
 
-// SaveTheme saves the current theme index to Skate
+// SelectTheme sets a specific theme by name
+func (tm *ThemeManager) SelectTheme(name string) bool {
+	theme, ok := lipglossthemes.Get(name)
+	if !ok {
+		return false
+	}
+
+	tm.CurrentName = name
+	tm.Current = theme
+
+	// Save theme to Skate (non-blocking)
+	go tm.SaveTheme()
+
+	return true
+}
+
+// SaveTheme saves the current theme name to Skate for viewer synchronization
 func (tm *ThemeManager) SaveTheme() {
-	indexStr := fmt.Sprintf("%d", tm.CurrentIndex)
 	if tm.SessionID != "" {
-		key := fmt.Sprintf("vinw-theme-index@%s", tm.SessionID)
-		cmd := exec.Command("skate", "set", key, indexStr)
+		key := fmt.Sprintf("vinw-theme-name@%s", tm.SessionID)
+		cmd := exec.Command("skate", "set", key, tm.CurrentName)
 		cmd.Run()
 	} else {
-		cmd := exec.Command("skate", "set", "vinw-theme-index", indexStr)
+		cmd := exec.Command("skate", "set", "vinw-theme-name", tm.CurrentName)
 		cmd.Run()
 	}
 }
 
-// BroadcastTheme broadcasts the theme change to viewer
-func (tm *ThemeManager) BroadcastTheme() {
-	// Simple sequential writes - NO goroutines, NO parallelization, NO races
-	sessionID := tm.SessionID
-	bg := string(tm.Current.HeaderBG)
-	fg := string(tm.Current.HeaderFG)
-	name := tm.Current.Name
-
-	if sessionID != "" {
-		exec.Command("skate", "set", fmt.Sprintf("vinw-theme-bg@%s", sessionID), bg).Run()
-		exec.Command("skate", "set", fmt.Sprintf("vinw-theme-fg@%s", sessionID), fg).Run()
-		exec.Command("skate", "set", fmt.Sprintf("vinw-theme-name@%s", sessionID), name).Run()
-	} else {
-		exec.Command("skate", "set", "vinw-theme-bg", bg).Run()
-		exec.Command("skate", "set", "vinw-theme-fg", fg).Run()
-		exec.Command("skate", "set", "vinw-theme-name", name).Run()
-	}
-}
-
-// GetSavedTheme retrieves the saved theme index from Skate
-func GetSavedTheme() int {
-	cmd := exec.Command("skate", "get", "vinw-theme-index")
+// GetSavedTheme retrieves the saved theme name from Skate
+func GetSavedTheme() string {
+	cmd := exec.Command("skate", "get", "vinw-theme-name")
 	output, err := cmd.Output()
 	if err != nil {
-		return 0
+		return ""
 	}
-
-	// Parse the saved index
-	indexStr := strings.TrimSpace(string(output))
-	index, err := strconv.Atoi(indexStr)
-	if err != nil {
-		return 0
-	}
-	return index
+	return strings.TrimSpace(string(output))
 }
 
-// GetSavedThemeWithSession retrieves the saved theme index from Skate with session
-func GetSavedThemeWithSession(sessionID string) int {
-	key := fmt.Sprintf("vinw-theme-index@%s", sessionID)
+// GetSavedThemeWithSession retrieves the saved theme name from Skate with session
+func GetSavedThemeWithSession(sessionID string) string {
+	key := fmt.Sprintf("vinw-theme-name@%s", sessionID)
 	cmd := exec.Command("skate", "get", key)
 	output, err := cmd.Output()
 	if err != nil {
-		return 0
+		return ""
 	}
-
-	// Parse the saved index
-	indexStr := strings.TrimSpace(string(output))
-	index, err := strconv.Atoi(indexStr)
-	if err != nil {
-		return 0
-	}
-	return index
+	return strings.TrimSpace(string(output))
 }
 
 // GetCurrentTheme gets the current theme from Skate for viewer
-func GetCurrentTheme() Theme {
+func GetCurrentTheme() lipglossthemes.Theme {
 	// Get theme name
 	cmd := exec.Command("skate", "get", "vinw-theme-name")
 	nameBytes, _ := cmd.Output()
-	name := string(nameBytes)
+	name := strings.TrimSpace(string(nameBytes))
 
-	// Find theme by name
-	for _, theme := range Themes {
-		if theme.Name == name {
+	// Get theme by name
+	if name != "" {
+		if theme, ok := lipglossthemes.Get(name); ok {
 			return theme
 		}
 	}
 
-	// Default to first theme if not found
-	return Themes[0]
+	// Default to Dracula if not found
+	theme, _ := lipglossthemes.Get("Dracula")
+	return theme
+}
+
+// GetCurrentThemeWithSession gets the current theme from Skate for viewer with session
+func GetCurrentThemeWithSession(sessionID string) lipglossthemes.Theme {
+	// Get theme name
+	key := fmt.Sprintf("vinw-theme-name@%s", sessionID)
+	cmd := exec.Command("skate", "get", key)
+	nameBytes, _ := cmd.Output()
+	name := strings.TrimSpace(string(nameBytes))
+
+	// Get theme by name
+	if name != "" {
+		if theme, ok := lipglossthemes.Get(name); ok {
+			return theme
+		}
+	}
+
+	// Default to Dracula if not found
+	theme, _ := lipglossthemes.Get("Dracula")
+	return theme
 }
 
 // CreateHeaderStyle creates a header style with the current theme
 func (tm *ThemeManager) CreateHeaderStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Background(tm.Current.HeaderBG).
-		Foreground(tm.Current.HeaderFG).
+		Background(tm.Current.Background).
+		Foreground(tm.Current.Foreground).
 		Bold(true).
 		Padding(0, 1)
 }
 
 // GetThemeDisplay returns a string showing current theme for display
 func (tm *ThemeManager) GetThemeDisplay() string {
-	return tm.Current.Name
+	return tm.CurrentName
 }

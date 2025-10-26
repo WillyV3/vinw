@@ -16,28 +16,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/tree"
+	lipglossthemes "github.com/willyv3/gogh-themes/lipgloss"
 	"github.com/sahilm/fuzzy"
-)
-
-// Styles
-var (
-	changedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42")).
-			Bold(true)
-
-	normalStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240"))
-
-	headerStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
-			Foreground(lipgloss.Color("230")).
-			Bold(true).
-			Padding(0, 1)
-
-	footerStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("243")).
-			Padding(0, 1)
 )
 
 // Messages
@@ -151,6 +131,10 @@ type model struct {
 	searchResults     []searchResult         // Current search results
 	searchSelectedIdx int                    // Selected result index
 	searchViewport    viewport.Model         // Viewport for search results
+	themePickerOpen   bool                   // Whether theme picker is open
+	themeFilterInput  textinput.Model        // Text input for theme search
+	themeFilteredList []string               // Filtered theme names
+	themeSelectedIdx  int                    // Selected theme in picker
 }
 
 // updateTreeCache updates the cached tree string and related values
@@ -186,7 +170,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargins)
 			m.viewport.YPosition = headerHeight
 			// Rebuild tree with initial settings
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 			m.updateTreeCache()
 			content := renderTreeWithSelection(m.treeString, m.selectedLine)
 			m.viewport.SetContent(content)
@@ -301,7 +285,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				// Rebuild tree to show new file/directory
-				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 				m.updateTreeCache()
 				newContent := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
 				m.viewport.SetContent(newContent)
@@ -337,7 +321,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				// Rebuild tree to remove deleted item
-				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 				m.updateTreeCache()
 
 				// Adjust selected line if needed
@@ -363,6 +347,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If in search mode, handle search input and navigation
 		if m.searchMode {
 			return m.handleSearchMode(msg)
+		}
+
+		// If in theme picker mode, handle theme picker input and navigation
+		if m.themePickerOpen {
+			return m.handleThemePickerMode(msg)
 		}
 
 		// Reset gg double-tap detection for any key except 'g' or 'G'
@@ -440,7 +429,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild entire tree
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 			m.updateTreeCache()
 
 			// Try to maintain selection
@@ -481,10 +470,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t":
 			// Next theme
 			m.theme.NextTheme()
+
+			// Rebuild tree with new theme colors
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
+			m.updateTreeCache()
+
+			// Update viewport with new tree
+			content := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+			m.viewport.SetContent(content)
+			m.lastContent = content
 			return m, nil
 		case "T":
-			// Previous theme
-			m.theme.PreviousTheme()
+			// Open theme picker (only if not in other modals)
+			if !m.showHelp && !m.showViewer && m.creatingMode == creationNone && m.deletePending == nil && !m.searchMode {
+				m.themePickerOpen = true
+				m.themeFilterInput = textinput.New()
+				m.themeFilterInput.Placeholder = "Search themes..."
+				m.themeFilterInput.Focus()
+				m.themeFilterInput.CharLimit = 50
+				m.themeFilterInput.Width = 40
+				m.themeFilteredList = m.theme.AllNames
+				m.themeSelectedIdx = 0
+				return m, textinput.Blink
+			}
 			return m, nil
 		case "i":
 			// Toggle gitignore respect
@@ -497,7 +505,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new ignore setting
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -542,7 +550,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new nesting setting
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -635,7 +643,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					// Rebuild tree with new expansion
-					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 					m.updateTreeCache()
 
 					// Try to maintain selection
@@ -685,7 +693,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Rebuild tree with new hidden setting
-			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+			m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 			m.updateTreeCache()
 
 			// Try to find the same file in the new map
@@ -729,7 +737,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					// Rebuild tree with new expansion
-					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 					m.updateTreeCache()
 
 					// Try to maintain selection
@@ -784,7 +792,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					// Rebuild tree with new expansion
-					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+					m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 					m.updateTreeCache()
 
 					// Try to maintain selection
@@ -908,7 +916,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Rebuild tree with cached diff data and gitignore settings
-		m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+		m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 		m.updateTreeCache()
 
 		// Try to maintain selection on the same file
@@ -969,7 +977,7 @@ Press any other key to continue...`, m.sessionID, m.sessionID)
 		startupStyle := lipgloss.NewStyle().
 			Padding(2, 4).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("62"))
+			BorderForeground(m.theme.Current.Magenta)
 
 		return lipgloss.Place(
 			m.width,
@@ -998,7 +1006,7 @@ Press any other key to dismiss...`, m.sessionID, m.sessionID)
 		viewerStyle := lipgloss.NewStyle().
 			Padding(2, 4).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("42"))
+			BorderForeground(m.theme.Current.BrightGreen)
 
 		return lipgloss.Place(
 			m.width,
@@ -1041,7 +1049,7 @@ enter: confirm • esc: cancel`, title, displayPath, m.textInput.View())
 		promptStyle := lipgloss.NewStyle().
 			Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("170"))
+			BorderForeground(m.theme.Current.Magenta)
 
 		return lipgloss.Place(
 			m.width,
@@ -1078,7 +1086,7 @@ y: confirm deletion • n/esc: cancel`, itemType, itemName, warning)
 		confirmStyle := lipgloss.NewStyle().
 			Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("196")) // Red for danger
+			BorderForeground(m.theme.Current.BrightRed) // Red for danger
 
 		return lipgloss.Place(
 			m.width,
@@ -1092,6 +1100,11 @@ y: confirm deletion • n/esc: cancel`, itemType, itemName, warning)
 	// Show search modal
 	if m.searchMode {
 		return m.renderSearchModal()
+	}
+
+	// Show theme picker modal
+	if m.themePickerOpen {
+		return m.renderThemePicker()
 	}
 
 	if m.showHelp {
@@ -1146,7 +1159,7 @@ Press any key to dismiss...`
 		helpStyle := lipgloss.NewStyle().
 			Padding(2, 4).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("62"))
+			BorderForeground(m.theme.Current.Magenta)
 
 		return lipgloss.Place(
 			m.width,
@@ -1175,7 +1188,7 @@ func (m model) headerView() string {
 	// Add copy hint if active
 	if m.showCopyHint {
 		copyHintStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42")). // Green
+			Foreground(m.theme.Current.BrightGreen). // Green
 			Bold(true)
 		hint := copyHintStyle.Render(fmt.Sprintf(" [Copied: %s]", m.copiedPath))
 		title = title + hint
@@ -1204,6 +1217,12 @@ func (m model) footerView() string {
 	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
 	line3 := "a: new file | A: new dir | d: delete | c: copy path | space/enter: select | ?: help | q: quit"
 	info := line1 + "\n" + line2 + "\n" + line3
+
+	// Use theme's Foreground for guaranteed contrast with terminal background
+	footerStyle := lipgloss.NewStyle().
+		Foreground(m.theme.Current.Foreground).
+		Padding(0, 1)
+
 	return footerStyle.Width(m.width).Render(info)
 }
 
@@ -1240,7 +1259,7 @@ func (m model) handleSearchMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				// Rebuild tree with expanded directories
-				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
 				m.updateTreeCache()
 
 				// Find the line number for the selected path
@@ -1339,6 +1358,94 @@ func (m model) handleSearchMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchResults = nil
 				m.searchSelectedIdx = 0
 				m.searchViewport.SetContent("")
+			}
+
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+// handleThemePickerMode handles all theme picker interactions
+func (m model) handleThemePickerMode(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc", "ctrl+c":
+			// Exit theme picker
+			m.themePickerOpen = false
+			m.themeFilterInput.Reset()
+			m.themeFilteredList = nil
+			m.themeSelectedIdx = 0
+			return m, nil
+		case "enter":
+			// Select theme
+			if len(m.themeFilteredList) > 0 && m.themeSelectedIdx < len(m.themeFilteredList) {
+				selectedTheme := m.themeFilteredList[m.themeSelectedIdx]
+				m.theme.SelectTheme(selectedTheme)
+
+				// Rebuild tree with new theme colors
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
+				m.updateTreeCache()
+
+				// Update viewport with new tree
+				content := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+				m.viewport.SetContent(content)
+				m.lastContent = content
+			}
+			// Exit theme picker
+			m.themePickerOpen = false
+			m.themeFilterInput.Reset()
+			m.themeFilteredList = nil
+			m.themeSelectedIdx = 0
+			return m, nil
+		case "down", "j":
+			// Navigate down in list
+			if len(m.themeFilteredList) > 0 && m.themeSelectedIdx < len(m.themeFilteredList)-1 {
+				m.themeSelectedIdx++
+			}
+			return m, nil
+		case "up", "k":
+			// Navigate up in list
+			if m.themeSelectedIdx > 0 {
+				m.themeSelectedIdx--
+			}
+			return m, nil
+		case "pgdown":
+			// Page down (jump 10)
+			if len(m.themeFilteredList) > 0 {
+				m.themeSelectedIdx += 10
+				if m.themeSelectedIdx >= len(m.themeFilteredList) {
+					m.themeSelectedIdx = len(m.themeFilteredList) - 1
+				}
+			}
+			return m, nil
+		case "pgup":
+			// Page up (jump 10)
+			m.themeSelectedIdx -= 10
+			if m.themeSelectedIdx < 0 {
+				m.themeSelectedIdx = 0
+			}
+			return m, nil
+		default:
+			// Update filter input
+			var cmd tea.Cmd
+			m.themeFilterInput, cmd = m.themeFilterInput.Update(msg)
+
+			// Filter themes on input change
+			query := strings.ToLower(strings.TrimSpace(m.themeFilterInput.Value()))
+			if query != "" {
+				// Simple substring matching
+				m.themeFilteredList = nil
+				for _, name := range m.theme.AllNames {
+					if strings.Contains(strings.ToLower(name), query) {
+						m.themeFilteredList = append(m.themeFilteredList, name)
+					}
+				}
+				m.themeSelectedIdx = 0
+			} else {
+				m.themeFilteredList = m.theme.AllNames
+				m.themeSelectedIdx = 0
 			}
 
 			return m, cmd
@@ -1501,11 +1608,11 @@ func (m *model) renderSearchModal() string {
 	if len(m.searchResults) == 0 {
 		if m.searchInput.Value() == "" {
 			resultsDisplay = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("240")).
+				Foreground(m.theme.Current.BrightBlack).
 				Render("Type to search...")
 		} else {
 			resultsDisplay = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("240")).
+				Foreground(m.theme.Current.BrightBlack).
 				Render("No matches found")
 		}
 	} else {
@@ -1517,12 +1624,12 @@ func (m *model) renderSearchModal() string {
 	var statusLine string
 	if len(m.searchResults) > 0 {
 		statusLine = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
+			Foreground(m.theme.Current.BrightBlack).
 			Render(fmt.Sprintf("Showing %d of %d results | ↑↓ j/k navigate | PgUp/PgDn scroll | Enter select | Esc cancel",
 				m.searchSelectedIdx+1, len(m.searchResults)))
 	} else {
 		statusLine = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("240")).
+			Foreground(m.theme.Current.BrightBlack).
 			Render("↑↓ j/k navigate | Enter select | Esc cancel")
 	}
 
@@ -1537,7 +1644,81 @@ func (m *model) renderSearchModal() string {
 	modalStyle := lipgloss.NewStyle().
 		Padding(2, 4).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
+		BorderForeground(m.theme.Current.Magenta).
+		Width(60)
+
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		modalStyle.Render(modalContent),
+	)
+}
+
+// renderThemePicker renders the theme picker modal overlay
+func (m *model) renderThemePicker() string {
+	// Build theme list display
+	var listDisplay string
+	if len(m.themeFilteredList) == 0 {
+		listDisplay = lipgloss.NewStyle().
+			Foreground(m.theme.Current.BrightBlack).
+			Render("No themes match filter")
+	} else {
+		// Show max 15 themes at a time
+		maxDisplay := 15
+		startIdx := m.themeSelectedIdx
+		if startIdx > len(m.themeFilteredList)-maxDisplay {
+			startIdx = len(m.themeFilteredList) - maxDisplay
+		}
+		if startIdx < 0 {
+			startIdx = 0
+		}
+
+		var lines []string
+		for i := startIdx; i < len(m.themeFilteredList) && i < startIdx+maxDisplay; i++ {
+			themeName := m.themeFilteredList[i]
+			if i == m.themeSelectedIdx {
+				// Selected theme
+				style := lipgloss.NewStyle().
+					Foreground(m.theme.Current.BrightGreen).
+					Bold(true)
+				lines = append(lines, style.Render("> "+themeName))
+			} else {
+				// Normal theme
+				style := lipgloss.NewStyle().
+					Foreground(m.theme.Current.Foreground)
+				lines = append(lines, style.Render("  "+themeName))
+			}
+		}
+		listDisplay = strings.Join(lines, "\n")
+	}
+
+	// Build status line
+	var statusLine string
+	if len(m.themeFilteredList) > 0 {
+		statusLine = lipgloss.NewStyle().
+			Foreground(m.theme.Current.BrightBlack).
+			Render(fmt.Sprintf("Showing %d of %d themes | ↑↓ j/k navigate | PgUp/PgDn jump | Enter select | Esc cancel",
+				m.themeSelectedIdx+1, len(m.themeFilteredList)))
+	} else {
+		statusLine = lipgloss.NewStyle().
+			Foreground(m.theme.Current.BrightBlack).
+			Render("Type to filter themes | Esc cancel")
+	}
+
+	// Build full modal
+	modalContent := fmt.Sprintf(
+		"Theme Picker: %s\n\n%s\n\n%s",
+		m.themeFilterInput.View(),
+		listDisplay,
+		statusLine,
+	)
+
+	modalStyle := lipgloss.NewStyle().
+		Padding(2, 4).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.Current.Magenta).
 		Width(60)
 
 	return lipgloss.Place(
@@ -1557,36 +1738,36 @@ func tick() tea.Cmd {
 }
 
 // buildTree recursively builds a file tree with git diff tracking
-func buildTree(rootPath string) *tree.Tree {
-	return buildTreeRecursive(rootPath, "", nil, nil, false)
+func buildTree(rootPath string, theme lipglossthemes.Theme) *tree.Tree {
+	return buildTreeRecursive(rootPath, "", nil, nil, false, theme)
 }
 
 // buildTreeWithCache builds a file tree using cached git diff data
-func buildTreeWithCache(rootPath string, diffCache map[string]int) *tree.Tree {
-	return buildTreeRecursive(rootPath, "", diffCache, nil, false)
+func buildTreeWithCache(rootPath string, diffCache map[string]int, theme lipglossthemes.Theme) *tree.Tree {
+	return buildTreeRecursive(rootPath, "", diffCache, nil, false, theme)
 }
 
 // buildTreeWithOptions builds a file tree with all options
-func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool) *tree.Tree {
-	return buildTreeRecursive(rootPath, "", diffCache, gitignore, respectIgnore)
+func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, theme lipglossthemes.Theme) *tree.Tree {
+	return buildTreeRecursive(rootPath, "", diffCache, gitignore, respectIgnore, theme)
 }
 
 // buildTreeWithMap builds tree and returns a map of line numbers to file paths (deprecated, use buildTreeWithMaps)
-func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool) (*tree.Tree, map[int]string) {
+func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, theme lipglossthemes.Theme) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
 	lineNum := 1                 // Start at 1 because the root directory takes line 0
 	visited := newVisitedPaths() // Track visited paths for symlink loop detection
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), false, &lineNum, fileMap, nil, visited, 0)
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), false, &lineNum, fileMap, nil, visited, 0, theme)
 	return t, fileMap
 }
 
 // buildTreeWithMaps builds tree and returns maps of line numbers to file paths and directory paths
-func buildTreeWithMaps(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool) (*tree.Tree, map[int]string, map[int]string) {
+func buildTreeWithMaps(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool, theme lipglossthemes.Theme) (*tree.Tree, map[int]string, map[int]string) {
 	fileMap := make(map[int]string)
 	dirMap := make(map[int]string)
 	lineNum := 1                 // Start at 1 because the root directory takes line 0
 	visited := newVisitedPaths() // Track visited paths for symlink loop detection
-	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, &lineNum, fileMap, dirMap, visited, 0)
+	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, &lineNum, fileMap, dirMap, visited, 0, theme)
 	return t, fileMap, dirMap
 }
 
@@ -1622,14 +1803,14 @@ func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
 	return strings.Join(result, "\n")
 }
 
-func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool, lineNum *int, fileMap map[int]string, dirMap map[int]string, visited *visitedPaths, depth int) *tree.Tree {
+func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool, lineNum *int, fileMap map[int]string, dirMap map[int]string, visited *visitedPaths, depth int, theme lipglossthemes.Theme) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
 	// Check max depth (prevent extremely deep symlink chains)
 	const maxDepth = 10
 	if depth > maxDepth {
-		warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("yellow"))
+		warningStyle := lipgloss.NewStyle().Foreground(theme.BrightYellow)
 		t.Child(warningStyle.Render("⚠ Max depth reached"))
 		return t
 	}
@@ -1637,7 +1818,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 	// Check for loops
 	if !visited.visit(path) {
 		// Loop detected
-		warningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("yellow"))
+		warningStyle := lipgloss.NewStyle().Foreground(theme.BrightYellow)
 		t.Child(warningStyle.Render("⚠ Symlink loop detected"))
 		return t
 	}
@@ -1681,7 +1862,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 
 			if isBroken || err != nil {
 				// Broken symlink - show in red
-				brokenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("red"))
+				brokenStyle := lipgloss.NewStyle().Foreground(theme.BrightRed)
 				displayName := entryName + " → (broken)"
 				t.Child(brokenStyle.Render(displayName))
 				*lineNum++
@@ -1690,7 +1871,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 
 			// Get symlink target for display
 			targetPath, _ := getSymlinkTarget(fullPath)
-			symlinkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("cyan"))
+			symlinkStyle := lipgloss.NewStyle().Foreground(theme.Cyan)
 
 			if targetIsDir {
 				// Symlinked directory
@@ -1710,7 +1891,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 					subTree := buildTreeRecursiveWithMap(
 						fullPath, relPath, diffCache, gitignore,
 						respectIgnore, nestingEnabled, expandedDirs,
-						showHidden, lineNum, fileMap, dirMap, visited, depth+1,
+						showHidden, lineNum, fileMap, dirMap, visited, depth+1, theme,
 					)
 					// Style the root with symlink indicator
 					styledRoot := symlinkStyle.Render(displayName)
@@ -1740,7 +1921,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 								subTreeChild := buildTreeRecursiveWithMap(
 									subFullPath, subRelPath, diffCache, gitignore,
 									respectIgnore, nestingEnabled, expandedDirs,
-									showHidden, lineNum, fileMap, dirMap, visited, depth+1,
+									showHidden, lineNum, fileMap, dirMap, visited, depth+1, theme,
 								)
 								subTree.Child(subTreeChild)
 							} else {
@@ -1753,14 +1934,14 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 									diffLines = diffCache[subRelPath]
 								}
 
-								fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+								fileStyle := lipgloss.NewStyle().Foreground(theme.Foreground)
 								name := fileStyle.Render(subEntry.Name())
 
 								if diffLines > 0 {
-									diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+									diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen)
 									name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
 								} else if diffLines == -1 {
-									diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+									diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen)
 									name = name + diffStyle.Render(" (new)")
 								}
 
@@ -1787,10 +1968,10 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 
 				name := symlinkStyle.Render(displayName)
 				if diffLines > 0 {
-					diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+					diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen)
 					name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
 				} else if diffLines == -1 {
-					diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+					diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen)
 					name = name + diffStyle.Render(" (new)")
 				}
 
@@ -1812,11 +1993,11 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 
 			if shouldExpand {
 				// Recursively build subtree - showHidden MUST be passed through
-				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, lineNum, fileMap, dirMap, visited, depth+1)
+				subTree := buildTreeRecursiveWithMap(fullPath, relPath, diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, lineNum, fileMap, dirMap, visited, depth+1, theme)
 				t.Child(subTree)
 			} else {
 				// Show collapsed directory (including hidden directories when showHidden is true)
-				dirStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("147"))
+				dirStyle := lipgloss.NewStyle().Foreground(theme.BrightBlue)
 				displayName := entryName + "/"
 				dirNameStyled := dirStyle.Render(displayName)
 				t.Child(dirNameStyled)
@@ -1833,16 +2014,16 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 			}
 
 			// Style filename (including hidden files when showHidden is true)
-			fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+			fileStyle := lipgloss.NewStyle().Foreground(theme.Foreground)
 			name := fileStyle.Render(entryName)
 
 			// Add diff indicator if file has changes
 			if diffLines > 0 {
-				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
+				diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen) // Green
 				name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
 			} else if diffLines == -1 {
 				// New untracked file (marked as -1 to avoid expensive line counting)
-				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
+				diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen) // Green
 				name = name + diffStyle.Render(" (new)")
 			}
 
@@ -1853,7 +2034,7 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 	return t
 }
 
-func buildTreeRecursive(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool) *tree.Tree {
+func buildTreeRecursive(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, theme lipglossthemes.Theme) *tree.Tree {
 	dirName := filepath.Base(path)
 	t := tree.Root(dirName)
 
@@ -1884,7 +2065,7 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 
 		if entry.IsDir() {
 			// Recursively build subtree
-			subTree := buildTreeRecursive(fullPath, relPath, diffCache, gitignore, respectIgnore)
+			subTree := buildTreeRecursive(fullPath, relPath, diffCache, gitignore, respectIgnore, theme)
 			t.Child(subTree)
 		} else {
 			// Get git diff lines from cache
@@ -1894,16 +2075,16 @@ func buildTreeRecursive(path string, relativePath string, diffCache map[string]i
 			}
 
 			// Style filename (including hidden files when showHidden is true)
-			fileStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+			fileStyle := lipgloss.NewStyle().Foreground(theme.Foreground)
 			name := fileStyle.Render(entryName)
 
 			// Add diff indicator if file has changes
 			if diffLines > 0 {
-				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
+				diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen) // Green
 				name = name + diffStyle.Render(fmt.Sprintf(" (+%d)", diffLines))
 			} else if diffLines == -1 {
 				// New untracked file (marked as -1 to avoid expensive line counting)
-				diffStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("42")) // Green
+				diffStyle := lipgloss.NewStyle().Foreground(theme.BrightGreen) // Green
 				name = name + diffStyle.Render(" (new)")
 			}
 
@@ -1947,6 +2128,9 @@ func main() {
 	// Generate unique session ID for this directory
 	sessionID := generateSessionID(absPath)
 
+	// Initialize theme manager with session
+	themeManager := internal.NewThemeManagerWithSession(sessionID)
+
 	// Build the viewer command
 	viewerCmd := fmt.Sprintf("vinw-viewer %s", sessionID)
 
@@ -1964,10 +2148,6 @@ func main() {
 		fmt.Printf("\n✓ Command copied to clipboard! Just paste in a new terminal.\n")
 	}
 	fmt.Printf("\nStarting ⓥⓘⓝⓦ...\n\n")
-
-	// Initialize theme manager with session ID FIRST
-	themeManager := internal.NewThemeManagerWithSession(sessionID)
-	themeManager.BroadcastTheme() // Broadcast initial theme to viewer
 
 	// Initialize GitHub repo if needed (only on first run for this directory)
 	if err := internal.InitGitHub(absPath); err != nil {
@@ -2001,9 +2181,12 @@ func main() {
 
 		// Benchmark tree building (3 runs for average)
 		var treeTimes []time.Duration
+		// Get default theme for benchmark
+		defaultTheme, _ := lipglossthemes.Get("Dracula")
+
 		for i := 0; i < 3; i++ {
 			start = time.Now()
-			_, _, _ = buildTreeWithMaps(watchPath, diffCache, gitignore, true, false, make(map[string]bool), false)
+			_, _, _ = buildTreeWithMaps(watchPath, diffCache, gitignore, true, false, make(map[string]bool), false, defaultTheme)
 			elapsed := time.Since(start)
 			treeTimes = append(treeTimes, elapsed)
 			fmt.Fprintf(os.Stderr, "Tree build #%d: %v\n", i+1, elapsed)
@@ -2029,7 +2212,7 @@ func main() {
 	nestingEnabled := false // Nesting off by default for large repos
 	showHidden := false     // Hidden files/folders off by default
 	expandedDirs := make(map[string]bool)
-	tree, fileMap, dirMap := buildTreeWithMaps(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden)
+	tree, fileMap, dirMap := buildTreeWithMaps(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, themeManager.Current)
 
 	// Initialize model
 	m := model{
