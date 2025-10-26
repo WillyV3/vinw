@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/tree"
+	"github.com/sahilm/fuzzy"
 )
 
 // Styles
@@ -104,37 +105,52 @@ type deletionState struct {
 	itemCount int    // Number of items in directory (if applicable)
 }
 
+// Search result
+type searchResult struct {
+	lineNum    int    // Line number in tree
+	path       string // Relative path
+	matchScore int    // Fuzzy match score
+	isDir      bool   // Whether it's a directory
+}
+
 // Model
 type model struct {
-	rootPath       string
-	tree           *tree.Tree
-	treeString     string                 // Cached tree string
-	treeLines      []string               // Cached tree lines
-	maxLine        int                    // Cached max line number
-	viewport       viewport.Model
-	ready          bool
-	width          int
-	height         int
-	diffCache      map[string]int         // Cache for git diff results
-	lastContent    string                 // Track last content to avoid unnecessary updates
-	gitignore      *internal.GitIgnore    // GitIgnore patterns
-	respectIgnore  bool                   // Whether to respect .gitignore
-	showHidden     bool                   // Whether to show hidden files and folders
-	nestingEnabled bool                   // Whether to show nested directories (global toggle)
-	expandedDirs   map[string]bool        // Track which directories are expanded (for manual expansion)
-	selectedLine   int                    // Currently selected line in viewport
-	fileMap        map[int]string         // Map of line number to file path
-	dirMap         map[int]string         // Map of line number to directory path
-	showHelp       bool                   // Whether to show help
-	showViewer     bool                   // Whether to show viewer command popup
-	showStartup    bool                   // Whether to show startup message
-	creatingMode   creationMode           // Current creation mode (file/directory/none)
-	textInput      textinput.Model        // Text input for file/directory names
-	deletePending  *deletionState         // Pending deletion (nil if none)
-	theme          *internal.ThemeManager // Theme manager
-	sessionID      string                 // Unique session ID for this instance
-	showCopyHint   bool                   // Whether to show "Copied!" hint
-	copiedPath     string                 // Path that was copied (for display)
+	rootPath          string
+	tree              *tree.Tree
+	treeString        string   // Cached tree string
+	treeLines         []string // Cached tree lines
+	maxLine           int      // Cached max line number
+	viewport          viewport.Model
+	ready             bool
+	width             int
+	height            int
+	diffCache         map[string]int         // Cache for git diff results
+	lastContent       string                 // Track last content to avoid unnecessary updates
+	gitignore         *internal.GitIgnore    // GitIgnore patterns
+	respectIgnore     bool                   // Whether to respect .gitignore
+	showHidden        bool                   // Whether to show hidden files and folders
+	nestingEnabled    bool                   // Whether to show nested directories (global toggle)
+	expandedDirs      map[string]bool        // Track which directories are expanded (for manual expansion)
+	selectedLine      int                    // Currently selected line in viewport
+	fileMap           map[int]string         // Map of line number to file path
+	dirMap            map[int]string         // Map of line number to directory path
+	showHelp          bool                   // Whether to show help
+	showViewer        bool                   // Whether to show viewer command popup
+	showStartup       bool                   // Whether to show startup message
+	creatingMode      creationMode           // Current creation mode (file/directory/none)
+	textInput         textinput.Model        // Text input for file/directory names
+	deletePending     *deletionState         // Pending deletion (nil if none)
+	theme             *internal.ThemeManager // Theme manager
+	sessionID         string                 // Unique session ID for this instance
+	showCopyHint      bool                   // Whether to show "Copied!" hint
+	copiedPath        string                 // Path that was copied (for display)
+	lastKeyWasG       bool                   // Track if last key was 'g' for gg detection
+	lastKeyTime       time.Time              // Time of last 'g' key press
+	searchMode        bool                   // Whether in search mode
+	searchInput       textinput.Model        // Text input for search query
+	searchResults     []searchResult         // Current search results
+	searchSelectedIdx int                    // Selected result index
+	searchViewport    viewport.Model         // Viewport for search results
 }
 
 // updateTreeCache updates the cached tree string and related values
@@ -344,9 +360,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		switch msg.String() {
+		// If in search mode, handle search input and navigation
+		if m.searchMode {
+			return m.handleSearchMode(msg)
+		}
+
+		// Reset gg double-tap detection for any key except 'g' or 'G'
+		keyStr := msg.String()
+		if keyStr != "g" && keyStr != "G" {
+			m.lastKeyWasG = false
+		}
+
+		switch keyStr {
 		case "?":
 			m.showHelp = !m.showHelp
+			return m, nil
+		case "/":
+			// Enter search mode (only if not in other modals)
+			if !m.showHelp && !m.showViewer && m.creatingMode == creationNone && m.deletePending == nil {
+				m.searchMode = true
+				m.searchInput = textinput.New()
+				m.searchInput.Placeholder = "Search files and directories..."
+				m.searchInput.Focus()
+				m.searchInput.CharLimit = 255
+				m.searchInput.Width = 50
+				m.searchResults = nil
+				m.searchSelectedIdx = 0
+
+				// Initialize search results viewport
+				m.searchViewport = viewport.New(56, 12) // Width 56 (fits in modal), Height 12 lines
+				m.searchViewport.SetContent("")
+			}
 			return m, nil
 		case "v":
 			m.showViewer = !m.showViewer
@@ -550,6 +594,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.selectedLine < m.viewport.YOffset {
 					m.viewport.LineUp(1)
 				}
+			}
+			return m, nil
+		case "G":
+			// Jump to bottom (vim-style)
+			m.selectedLine = m.maxLine
+			content := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+			m.viewport.SetContent(content)
+			m.viewport.GotoBottom()
+			m.lastKeyWasG = false // Reset g flag
+			return m, nil
+		case "g":
+			// Handle gg for jump to top (vim-style double-tap)
+			if m.lastKeyWasG && time.Since(m.lastKeyTime) < 500*time.Millisecond {
+				// Double-tap detected - jump to top
+				m.selectedLine = 0
+				content := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+				m.viewport.SetContent(content)
+				m.viewport.GotoTop()
+				m.lastKeyWasG = false
+			} else {
+				// First g press - set flag and wait for second
+				m.lastKeyWasG = true
+				m.lastKeyTime = time.Now()
 			}
 			return m, nil
 		case "h":
@@ -1022,6 +1089,11 @@ y: confirm deletion • n/esc: cancel`, itemType, itemName, warning)
 		)
 	}
 
+	// Show search modal
+	if m.searchMode {
+		return m.renderSearchModal()
+	}
+
 	if m.showHelp {
 		helpText := `╭─────────────────────────────────────╮
 │          ⓥⓘⓝⓦ Help Guide            │
@@ -1036,6 +1108,9 @@ Navigation (Vim-style)
 ──────────────────────
   j, ↓          Move down
   k, ↑          Move up
+  g g           Jump to top
+  G             Jump to bottom
+  /             Fuzzy search
   h, ←          Collapse directory
   l, →          Expand directory
   Space/Enter   Select file to view
@@ -1132,6 +1207,348 @@ func (m model) footerView() string {
 	return footerStyle.Width(m.width).Render(info)
 }
 
+// handleSearchMode handles all search mode interactions
+func (m model) handleSearchMode(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc", "ctrl+c":
+			// Exit search mode
+			m.searchMode = false
+			m.searchInput.Reset()
+			m.searchResults = nil
+			m.searchSelectedIdx = 0
+			return m, nil
+		case "enter":
+			// Jump to selected result
+			if len(m.searchResults) > 0 && m.searchSelectedIdx < len(m.searchResults) {
+				result := m.searchResults[m.searchSelectedIdx]
+
+				// If nesting is disabled, expand all parent directories
+				if !m.nestingEnabled {
+					// Get all parent directories
+					pathParts := strings.Split(result.path, string(filepath.Separator))
+					currentPath := ""
+					for i := 0; i < len(pathParts)-1; i++ {
+						if currentPath == "" {
+							currentPath = pathParts[i]
+						} else {
+							currentPath = filepath.Join(currentPath, pathParts[i])
+						}
+						m.expandedDirs[currentPath] = true
+					}
+				}
+
+				// Rebuild tree with expanded directories
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden)
+				m.updateTreeCache()
+
+				// Find the line number for the selected path
+				selectedLine := 0
+				if result.isDir {
+					for line, path := range m.dirMap {
+						if path == result.path {
+							selectedLine = line
+							break
+						}
+					}
+				} else {
+					for line, path := range m.fileMap {
+						if path == result.path {
+							selectedLine = line
+							break
+						}
+					}
+				}
+
+				m.selectedLine = selectedLine
+
+				// Update viewport with new selection
+				content := renderTreeWithSelectionOptimized(m.treeLines, m.selectedLine)
+				m.viewport.SetContent(content)
+
+				// Auto-scroll to selection
+				if m.selectedLine < m.viewport.YOffset {
+					m.viewport.GotoTop()
+					for i := 0; i < m.selectedLine; i++ {
+						m.viewport.LineDown(1)
+					}
+				} else if m.selectedLine >= m.viewport.YOffset+m.viewport.Height-1 {
+					m.viewport.GotoTop()
+					for i := 0; i < m.selectedLine; i++ {
+						m.viewport.LineDown(1)
+					}
+				}
+
+				// Exit search mode
+				m.searchMode = false
+				m.searchInput.Reset()
+				m.searchResults = nil
+				m.searchSelectedIdx = 0
+			}
+			return m, nil
+		case "down", "j":
+			// Navigate down in results
+			if len(m.searchResults) > 0 && m.searchSelectedIdx < len(m.searchResults)-1 {
+				m.searchSelectedIdx++
+				// Update viewport content with new selection
+				m.updateSearchViewport()
+			}
+			return m, nil
+		case "up", "k":
+			// Navigate up in results
+			if m.searchSelectedIdx > 0 {
+				m.searchSelectedIdx--
+				// Update viewport content with new selection
+				m.updateSearchViewport()
+			}
+			return m, nil
+		case "pgdown":
+			// Page down in results
+			if len(m.searchResults) > 0 {
+				m.searchSelectedIdx += m.searchViewport.Height
+				if m.searchSelectedIdx >= len(m.searchResults) {
+					m.searchSelectedIdx = len(m.searchResults) - 1
+				}
+				m.updateSearchViewport()
+			}
+			return m, nil
+		case "pgup":
+			// Page up in results
+			if m.searchSelectedIdx > 0 {
+				m.searchSelectedIdx -= m.searchViewport.Height
+				if m.searchSelectedIdx < 0 {
+					m.searchSelectedIdx = 0
+				}
+				m.updateSearchViewport()
+			}
+			return m, nil
+		default:
+			// Handle text input
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+
+			// Perform search on input change
+			query := strings.TrimSpace(m.searchInput.Value())
+			if query != "" {
+				m.searchResults = m.performSearch(query)
+				m.searchSelectedIdx = 0
+				// Update viewport with new results
+				m.updateSearchViewport()
+			} else {
+				m.searchResults = nil
+				m.searchSelectedIdx = 0
+				m.searchViewport.SetContent("")
+			}
+
+			return m, cmd
+		}
+	}
+	return m, nil
+}
+
+// updateSearchViewport updates the search viewport content with current results and selection
+func (m *model) updateSearchViewport() {
+	if len(m.searchResults) == 0 {
+		m.searchViewport.SetContent("")
+		return
+	}
+
+	var lines []string
+	for i, result := range m.searchResults {
+		// Highlight selected result
+		style := lipgloss.NewStyle()
+		if i == m.searchSelectedIdx {
+			style = style.Reverse(true).Bold(true)
+		}
+
+		// Show directory indicator
+		prefix := "  "
+		if result.isDir {
+			prefix = "📁"
+		}
+
+		line := fmt.Sprintf("%s %s", prefix, result.path)
+		lines = append(lines, style.Render(line))
+	}
+
+	content := strings.Join(lines, "\n")
+	m.searchViewport.SetContent(content)
+
+	// Auto-scroll to keep selected item visible
+	// Calculate which line the selected item is on
+	if m.searchSelectedIdx < m.searchViewport.YOffset {
+		// Selected item is above viewport, scroll up
+		m.searchViewport.YOffset = m.searchSelectedIdx
+	} else if m.searchSelectedIdx >= m.searchViewport.YOffset+m.searchViewport.Height {
+		// Selected item is below viewport, scroll down
+		m.searchViewport.YOffset = m.searchSelectedIdx - m.searchViewport.Height + 1
+	}
+}
+
+// getAllPaths recursively collects all file and directory paths regardless of expansion state
+func (m *model) getAllPaths() []searchResult {
+	var results []searchResult
+	visited := newVisitedPaths() // Track visited paths for symlink loop detection
+
+	// Helper to recursively walk directories
+	var walk func(relPath string)
+	walk = func(relPath string) {
+		fullPath := filepath.Join(m.rootPath, relPath)
+
+		// Check for symlink loops
+		if !visited.visit(fullPath) {
+			return // Loop detected, skip
+		}
+
+		entries, err := os.ReadDir(fullPath)
+		if err != nil {
+			return
+		}
+
+		for _, entry := range entries {
+			name := entry.Name()
+
+			// Skip hidden files if not showing hidden
+			if !m.showHidden && strings.HasPrefix(name, ".") {
+				continue
+			}
+
+			itemRelPath := name
+			if relPath != "" {
+				itemRelPath = filepath.Join(relPath, name)
+			}
+
+			itemFullPath := filepath.Join(m.rootPath, itemRelPath)
+
+			// Check gitignore
+			if m.respectIgnore && m.gitignore != nil && m.gitignore.IsIgnored(itemFullPath) {
+				continue
+			}
+
+			isDir := entry.IsDir()
+
+			// Handle symlinks
+			if isSymlink(entry) {
+				symlinkPath := itemFullPath
+				isDirTarget, isBroken, err := isSymlinkToDir(symlinkPath)
+				if err != nil || isBroken {
+					// Skip broken symlinks
+					continue
+				}
+				isDir = isDirTarget
+			}
+
+			// Add to results
+			results = append(results, searchResult{
+				path:  itemRelPath,
+				isDir: isDir,
+			})
+
+			// Recurse into directories
+			if isDir {
+				walk(itemRelPath)
+			}
+		}
+	}
+
+	walk("")
+	return results
+}
+
+// performSearch performs fuzzy search on all files and directories
+func (m *model) performSearch(query string) []searchResult {
+	if query == "" {
+		return nil
+	}
+
+	// Get all paths from filesystem (ignores expansion state)
+	allPaths := m.getAllPaths()
+
+	// Build string slice for fuzzy matching
+	pathStrings := make([]string, len(allPaths))
+	for i, item := range allPaths {
+		pathStrings[i] = item.path
+	}
+
+	// Perform fuzzy search
+	matches := fuzzy.Find(query, pathStrings)
+
+	// Convert to search results (limit to 50 for performance)
+	maxResults := 50
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+
+	results := make([]searchResult, len(matches))
+	for i, match := range matches {
+		item := allPaths[match.Index]
+		results[i] = searchResult{
+			path:       item.path,
+			matchScore: match.Score,
+			isDir:      item.isDir,
+			lineNum:    -1, // Will be set after tree expansion
+		}
+	}
+
+	return results
+}
+
+// renderSearchModal renders the search modal overlay
+func (m *model) renderSearchModal() string {
+	// Build search results display
+	var resultsDisplay string
+	if len(m.searchResults) == 0 {
+		if m.searchInput.Value() == "" {
+			resultsDisplay = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240")).
+				Render("Type to search...")
+		} else {
+			resultsDisplay = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240")).
+				Render("No matches found")
+		}
+	} else {
+		// Use viewport for scrollable results
+		resultsDisplay = m.searchViewport.View()
+	}
+
+	// Build status line with result count
+	var statusLine string
+	if len(m.searchResults) > 0 {
+		statusLine = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Render(fmt.Sprintf("Showing %d of %d results | ↑↓ j/k navigate | PgUp/PgDn scroll | Enter select | Esc cancel",
+				m.searchSelectedIdx+1, len(m.searchResults)))
+	} else {
+		statusLine = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240")).
+			Render("↑↓ j/k navigate | Enter select | Esc cancel")
+	}
+
+	// Build full modal
+	modalContent := fmt.Sprintf(
+		"Search: %s\n\n%s\n\n%s",
+		m.searchInput.View(),
+		resultsDisplay,
+		statusLine,
+	)
+
+	modalStyle := lipgloss.NewStyle().
+		Padding(2, 4).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Width(60)
+
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		modalStyle.Render(modalContent),
+	)
+}
+
 func tick() tea.Cmd {
 	// Reduced frequency: manual refresh with 'r' key is preferred for performance
 	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
@@ -1157,7 +1574,7 @@ func buildTreeWithOptions(rootPath string, diffCache map[string]int, gitignore *
 // buildTreeWithMap builds tree and returns a map of line numbers to file paths (deprecated, use buildTreeWithMaps)
 func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool) (*tree.Tree, map[int]string) {
 	fileMap := make(map[int]string)
-	lineNum := 1 // Start at 1 because the root directory takes line 0
+	lineNum := 1                 // Start at 1 because the root directory takes line 0
 	visited := newVisitedPaths() // Track visited paths for symlink loop detection
 	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, make(map[string]bool), false, &lineNum, fileMap, nil, visited, 0)
 	return t, fileMap
@@ -1167,7 +1584,7 @@ func buildTreeWithMap(rootPath string, diffCache map[string]int, gitignore *inte
 func buildTreeWithMaps(rootPath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool) (*tree.Tree, map[int]string, map[int]string) {
 	fileMap := make(map[int]string)
 	dirMap := make(map[int]string)
-	lineNum := 1 // Start at 1 because the root directory takes line 0
+	lineNum := 1                 // Start at 1 because the root directory takes line 0
 	visited := newVisitedPaths() // Track visited paths for symlink loop detection
 	t := buildTreeRecursiveWithMap(rootPath, "", diffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden, &lineNum, fileMap, dirMap, visited, 0)
 	return t, fileMap, dirMap
@@ -1610,7 +2027,7 @@ func main() {
 	// Build initial tree with gitignore support (default: ON) and nesting disabled (default: OFF)
 	respectIgnore := true
 	nestingEnabled := false // Nesting off by default for large repos
-	showHidden := false // Hidden files/folders off by default
+	showHidden := false     // Hidden files/folders off by default
 	expandedDirs := make(map[string]bool)
 	tree, fileMap, dirMap := buildTreeWithMaps(watchPath, initialDiffCache, gitignore, respectIgnore, nestingEnabled, expandedDirs, showHidden)
 
