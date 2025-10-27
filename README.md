@@ -8,7 +8,7 @@
 [![Homebrew](https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat&logo=homebrew)](https://brew.sh/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat)](LICENSE)
 
-**A fast, interactive file tree viewer with real-time git tracking, file creation, and dual-terminal preview. The file tree we never got. **
+**A fast, interactive file tree viewer with real-time git tracking, file creation, and dual-terminal preview.**
 
 ![Demo]<img width="1512" height="953" alt="Screenshot 2025-10-04 at 9 43 27 AM" src="https://github.com/user-attachments/assets/990922f7-0363-4f3a-8f35-7977e2fff8c9" />
 
