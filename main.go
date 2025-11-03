@@ -134,6 +134,8 @@ type model struct {
 	findReplaceModel  findreplace.Model      // Find/replace model
 	searchSelectedIdx int                    // Selected result index
 	searchViewport    viewport.Model         // Viewport for search results
+	moveMode          bool                   // Whether in move mode
+	moveSource        string                 // Full path of file/folder being moved
 	themePickerOpen   bool                   // Whether theme picker is open
 	themeFilterInput  textinput.Model        // Text input for theme search
 	themeFilteredList []string               // Filtered theme names
@@ -314,6 +316,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				m.textInput, cmd = m.textInput.Update(msg)
 				return m, cmd
+			}
+		}
+
+		// If in move mode, allow esc to cancel
+		if m.moveMode {
+			if msg.String() == "esc" {
+				m.moveMode = false
+				m.moveSource = ""
+				return m, nil
 			}
 		}
 
@@ -860,6 +871,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "enter", " ":
+			// If in move mode, complete the move
+			if m.moveMode {
+				// Get destination directory
+				var destDir string
+				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+					destDir = filepath.Join(m.rootPath, dirPath)
+				} else {
+					// Not on a directory, can't drop here
+					return m, nil
+				}
+
+				// Perform the move
+				err := internal.MoveFileOrFolder(m.moveSource, destDir)
+				if err != nil {
+					// TODO: Show error to user
+					// For now, just cancel move mode
+					m.moveMode = false
+					m.moveSource = ""
+					return m, nil
+				}
+
+				// Move successful - exit move mode and rebuild tree
+				m.moveMode = false
+				m.moveSource = ""
+
+				// Rebuild tree to reflect changes
+				m.tree, m.fileMap, m.dirMap = buildTreeWithMaps(m.rootPath, m.diffCache, m.gitignore, m.respectIgnore, m.nestingEnabled, m.expandedDirs, m.showHidden, m.theme.Current)
+				m.updateTreeCache()
+				content := renderTreeWithSelection(m.treeString, m.selectedLine)
+				m.viewport.SetContent(content)
+				m.lastContent = content
+
+				return m, nil
+			}
+
+			// Normal enter behavior - select file for viewer
 			// Get the file at the selected line (only files are in the map, not directories)
 			if filePath, ok := m.fileMap[m.selectedLine]; ok {
 				fullPath := filepath.Join(m.rootPath, filePath)
@@ -925,6 +972,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				itemCount: itemCount,
 			}
 
+			return m, nil
+		case "m":
+			// Start move mode - grab current file or folder
+			if !m.moveMode {
+				var sourcePath string
+
+				// Check if selected line is a directory
+				if dirPath, ok := m.dirMap[m.selectedLine]; ok {
+					sourcePath = filepath.Join(m.rootPath, dirPath)
+				} else if filePath, ok := m.fileMap[m.selectedLine]; ok {
+					sourcePath = filepath.Join(m.rootPath, filePath)
+				} else {
+					// Nothing selected
+					return m, nil
+				}
+
+				m.moveMode = true
+				m.moveSource = sourcePath
+			}
 			return m, nil
 		}
 
@@ -1169,6 +1235,7 @@ Navigation (Vim-style)
   A             Create new directory
   d             Delete file/directory
   c             Copy path to clipboard
+  m             Move file/folder
   v             Show viewer command
   ?             Toggle this help
   q             Quit
@@ -1227,6 +1294,16 @@ func (m model) headerView() string {
 		title = title + hint
 	}
 
+	// Add move mode indicator if active
+	if m.moveMode {
+		moveHintStyle := lipgloss.NewStyle().
+			Foreground(m.theme.Current.BrightYellow). // Yellow for move
+			Bold(true)
+		itemName := filepath.Base(m.moveSource)
+		hint := moveHintStyle.Render(fmt.Sprintf(" [Moving: %s]", itemName))
+		title = title + hint
+	}
+
 	// Use theme colors for header
 	themedHeaderStyle := m.theme.CreateHeaderStyle()
 	return themedHeaderStyle.Width(m.width).Render(title)
@@ -1234,7 +1311,14 @@ func (m model) headerView() string {
 
 func (m model) footerView() string {
 	// Minimal footer - just the essentials
-	info := fmt.Sprintf("j/k: nav | space: select | t/T: theme [%s] | F: find/replace | ?: help | q: quit", m.theme.Current.Name)
+	var info string
+	if m.moveMode {
+		// Show move mode hints
+		itemName := filepath.Base(m.moveSource)
+		info = fmt.Sprintf("j/k: nav | enter: drop here | esc: cancel | Moving: %s", itemName)
+	} else {
+		info = fmt.Sprintf("j/k: nav | space: select | t/T: theme [%s] | F: find/replace | ?: help | q: quit", m.theme.Current.Name)
+	}
 	footerStyle := m.theme.CreateHeaderStyle()
 	return footerStyle.Width(m.width).Render(info)
 }

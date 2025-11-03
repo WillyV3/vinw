@@ -116,3 +116,49 @@ func GetParentDirectory(path string) string {
 	}
 	return parent
 }
+
+// MoveFileOrFolder moves a file or folder from source to destination directory
+func MoveFileOrFolder(source, destDir string) error {
+	// Check if source exists
+	info, err := os.Stat(source)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("source does not exist: %s", source)
+		}
+		return fmt.Errorf("failed to stat source: %w", err)
+	}
+
+	// Check if destination directory exists
+	destInfo, err := os.Stat(destDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("destination directory does not exist: %s", destDir)
+		}
+		return fmt.Errorf("failed to stat destination: %w", err)
+	}
+
+	// Ensure destination is a directory
+	if !destInfo.IsDir() {
+		return fmt.Errorf("destination is not a directory: %s", destDir)
+	}
+
+	// Build destination path
+	basename := filepath.Base(source)
+	dest := filepath.Join(destDir, basename)
+
+	// Check if destination already exists
+	if _, err := os.Stat(dest); err == nil {
+		itemType := "file"
+		if info.IsDir() {
+			itemType = "folder"
+		}
+		return fmt.Errorf("%s already exists at destination: %s", itemType, dest)
+	}
+
+	// Perform the move using os.Rename
+	if err := os.Rename(source, dest); err != nil {
+		return fmt.Errorf("failed to move: %w", err)
+	}
+
+	return nil
+}
