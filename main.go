@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"vinw/internal"
+	"vinw/internal/findreplace"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -129,6 +130,8 @@ type model struct {
 	searchMode        bool                   // Whether in search mode
 	searchInput       textinput.Model        // Text input for search query
 	searchResults     []searchResult         // Current search results
+	findReplaceMode   bool                   // Whether in find/replace mode
+	findReplaceModel  findreplace.Model      // Find/replace model
 	searchSelectedIdx int                    // Selected result index
 	searchViewport    viewport.Model         // Viewport for search results
 	themePickerOpen   bool                   // Whether theme picker is open
@@ -156,6 +159,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd  tea.Cmd
 		cmds []tea.Cmd
 	)
+
+	// If in find/replace mode, delegate ALL messages to it (except escape to exit)
+	if m.findReplaceMode {
+		// Check for escape to exit (only in input fields state)
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			if keyMsg.String() == "esc" && m.findReplaceModel.State == findreplace.StateInputFields {
+				m.findReplaceMode = false
+				return m, nil
+			}
+		}
+		// Delegate ALL messages to findreplace model
+		m.findReplaceModel, cmd = m.findReplaceModel.Update(msg)
+		return m, cmd
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -364,6 +381,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = !m.showHelp
 			return m, nil
+		case "F":
+			// Enter find/replace mode
+			m.findReplaceMode = true
+			m.findReplaceModel = findreplace.New(m.rootPath, m.theme.Current)
+			// Return both WindowSizeMsg and Init commands
+			return m, tea.Batch(
+				func() tea.Msg {
+					return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+				},
+				m.findReplaceModel.Init(),
+			)
 		case "/":
 			// Enter search mode (only if not in other modals)
 			if !m.showHelp && !m.showViewer && m.creatingMode == creationNone && m.deletePending == nil {
@@ -1097,6 +1125,11 @@ y: confirm deletion • n/esc: cancel`, itemType, itemName, warning)
 		)
 	}
 
+	// Show find/replace mode
+	if m.findReplaceMode {
+		return m.findReplaceModel.View()
+	}
+
 	// Show search modal
 	if m.searchMode {
 		return m.renderSearchModal()
@@ -1200,29 +1233,9 @@ func (m model) headerView() string {
 }
 
 func (m model) footerView() string {
-	ignoreStatus := "OFF"
-	if m.respectIgnore {
-		ignoreStatus = "ON"
-	}
-	hiddenStatus := "OFF"
-	if m.showHidden {
-		hiddenStatus = "ON"
-	}
-	nestStatus := "OFF"
-	if m.nestingEnabled {
-		nestStatus = "ON"
-	}
-	// Three lines for skinny layout
-	line1 := fmt.Sprintf("j/k: nav | h/l: collapse/expand | u: hidden [%s] | r/R: refresh", hiddenStatus)
-	line2 := fmt.Sprintf("i: git [%s] | n: nesting [%s] | t/T: theme [%s]", ignoreStatus, nestStatus, m.theme.Current.Name)
-	line3 := "a: new file | A: new dir | d: delete | c: copy path | space/enter: select | ?: help | q: quit"
-	info := line1 + "\n" + line2 + "\n" + line3
-
-	// Use theme's Foreground for guaranteed contrast with terminal background
-	footerStyle := lipgloss.NewStyle().
-		Foreground(m.theme.Current.Foreground).
-		Padding(0, 1)
-
+	// Minimal footer - just the essentials
+	info := fmt.Sprintf("j/k: nav | space: select | t/T: theme [%s] | F: find/replace | ?: help | q: quit", m.theme.Current.Name)
+	footerStyle := m.theme.CreateHeaderStyle()
 	return footerStyle.Width(m.width).Render(info)
 }
 
@@ -1805,7 +1818,8 @@ func renderTreeWithSelectionOptimized(lines []string, selectedLine int) string {
 
 func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, nestingEnabled bool, expandedDirs map[string]bool, showHidden bool, lineNum *int, fileMap map[int]string, dirMap map[int]string, visited *visitedPaths, depth int, theme lipglossthemes.Theme) *tree.Tree {
 	dirName := filepath.Base(path)
-	t := tree.Root(dirName)
+	t := tree.Root(dirName).
+		EnumeratorStyle(lipgloss.NewStyle().Foreground(theme.BrightBlack))
 
 	// Check max depth (prevent extremely deep symlink chains)
 	const maxDepth = 10
@@ -1895,7 +1909,8 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 					)
 					// Style the root with symlink indicator
 					styledRoot := symlinkStyle.Render(displayName)
-					subTree = tree.Root(styledRoot)
+					subTree = tree.Root(styledRoot).
+						EnumeratorStyle(lipgloss.NewStyle().Foreground(theme.BrightBlack))
 
 					// Re-scan and add children
 					subEntries, err := os.ReadDir(fullPath)
@@ -2036,7 +2051,8 @@ func buildTreeRecursiveWithMap(path string, relativePath string, diffCache map[s
 
 func buildTreeRecursive(path string, relativePath string, diffCache map[string]int, gitignore *internal.GitIgnore, respectIgnore bool, theme lipglossthemes.Theme) *tree.Tree {
 	dirName := filepath.Base(path)
-	t := tree.Root(dirName)
+	t := tree.Root(dirName).
+		EnumeratorStyle(lipgloss.NewStyle().Foreground(theme.BrightBlack))
 
 	entries, err := os.ReadDir(path)
 	if err != nil {

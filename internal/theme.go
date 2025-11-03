@@ -22,7 +22,7 @@ func NewThemeManager() *ThemeManager {
 	allNames := lipglossthemes.Names()
 
 	// Try to load saved theme from Skate
-	savedName := GetSavedTheme()
+	savedName := SavedTheme()
 	if savedName != "" {
 		if theme, ok := lipglossthemes.Get(savedName); ok {
 			return &ThemeManager{
@@ -47,7 +47,7 @@ func NewThemeManagerWithSession(sessionID string) *ThemeManager {
 	allNames := lipglossthemes.Names()
 
 	// Try to load saved theme from Skate with session
-	savedName := GetSavedThemeWithSession(sessionID)
+	savedName := SavedThemeWithSession(sessionID)
 	if savedName != "" {
 		if theme, ok := lipglossthemes.Get(savedName); ok {
 			return &ThemeManager{
@@ -142,8 +142,8 @@ func (tm *ThemeManager) SaveTheme() {
 	}
 }
 
-// GetSavedTheme retrieves the saved theme name from Skate
-func GetSavedTheme() string {
+// SavedTheme retrieves the saved theme name from Skate
+func SavedTheme() string {
 	cmd := exec.Command("skate", "get", "vinw-theme-name")
 	output, err := cmd.Output()
 	if err != nil {
@@ -152,8 +152,8 @@ func GetSavedTheme() string {
 	return strings.TrimSpace(string(output))
 }
 
-// GetSavedThemeWithSession retrieves the saved theme name from Skate with session
-func GetSavedThemeWithSession(sessionID string) string {
+// SavedThemeWithSession retrieves the saved theme name from Skate with session
+func SavedThemeWithSession(sessionID string) string {
 	key := fmt.Sprintf("vinw-theme-name@%s", sessionID)
 	cmd := exec.Command("skate", "get", key)
 	output, err := cmd.Output()
@@ -163,14 +163,14 @@ func GetSavedThemeWithSession(sessionID string) string {
 	return strings.TrimSpace(string(output))
 }
 
-// GetCurrentTheme gets the current theme from Skate for viewer
-func GetCurrentTheme() lipglossthemes.Theme {
-	// Get theme name
+// CurrentTheme s the current theme from Skate for viewer
+func CurrentTheme() lipglossthemes.Theme {
+	//  theme name
 	cmd := exec.Command("skate", "get", "vinw-theme-name")
 	nameBytes, _ := cmd.Output()
 	name := strings.TrimSpace(string(nameBytes))
 
-	// Get theme by name
+	//  theme by name
 	if name != "" {
 		if theme, ok := lipglossthemes.Get(name); ok {
 			return theme
@@ -182,15 +182,15 @@ func GetCurrentTheme() lipglossthemes.Theme {
 	return theme
 }
 
-// GetCurrentThemeWithSession gets the current theme from Skate for viewer with session
-func GetCurrentThemeWithSession(sessionID string) lipglossthemes.Theme {
-	// Get theme name
+// CurrentThemeWithSession s the current theme from Skate for viewer with session
+func CurrentThemeWithSession(sessionID string) lipglossthemes.Theme {
+	//  theme name
 	key := fmt.Sprintf("vinw-theme-name@%s", sessionID)
 	cmd := exec.Command("skate", "get", key)
 	nameBytes, _ := cmd.Output()
 	name := strings.TrimSpace(string(nameBytes))
 
-	// Get theme by name
+	//  theme by name
 	if name != "" {
 		if theme, ok := lipglossthemes.Get(name); ok {
 			return theme
@@ -211,7 +211,7 @@ func (tm *ThemeManager) CreateHeaderStyle() lipgloss.Style {
 		Padding(0, 1)
 }
 
-// GetThemeDisplay returns a string showing current theme for display
-func (tm *ThemeManager) GetThemeDisplay() string {
+// ThemeDisplay returns a string showing current theme for display
+func (tm *ThemeManager) ThemeDisplay() string {
 	return tm.CurrentName
 }
