@@ -29,6 +29,8 @@ const (
 	StateInputFields State = iota
 	// StateSearchResults shows the list of search results
 	StateSearchResults
+	// StateConfirmReplacement shows confirmation dialog before replacement
+	StateConfirmReplacement
 	// StatePerformingReplacement shows progress during replacement
 	StatePerformingReplacement
 	// StateReplacementComplete shows final stats
@@ -384,6 +386,8 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleInputFieldsKeys(msg)
 	case StateSearchResults:
 		return m.handleSearchResultsKeys(msg)
+	case StateConfirmReplacement:
+		return m.handleConfirmKeys(msg)
 	case StateReplacementComplete:
 		return m.handleResultsKeys(msg)
 	}
@@ -479,7 +483,7 @@ func (m Model) handleSearchResultsKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.resultsList.SetItems(items)
 
-	case "v":
+	case "v", "enter":
 		// Jump to this result in the viewer
 		items := m.resultsList.Items()
 		if len(items) > 0 {
@@ -491,15 +495,31 @@ func (m Model) handleSearchResultsKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "enter":
-		// Perform replacement on included items
+	case "r":
+		// Show confirmation dialog before performing replacement
+		m.State = StateConfirmReplacement
+		return m, nil
+
+	default:
+		// Let the list handle j/k/g/G and other navigation keys
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m Model) handleConfirmKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		// Confirm - proceed with replacement
 		m.State = StatePerformingReplacement
 		m.progressPct = 0
 		m.progressMsg = "Starting replacement..."
 		return m, m.performReplacement()
 
-	default:
-		// Let the list handle j/k/g/G and other navigation keys
+	case "n", "esc":
+		// Cancel - go back to results
+		m.State = StateSearchResults
 		return m, nil
 	}
 
@@ -884,6 +904,8 @@ func (m Model) View() string {
 		return m.viewInputFields()
 	case StateSearchResults:
 		return m.viewSearchResults()
+	case StateConfirmReplacement:
+		return m.viewConfirmReplacement()
 	case StatePerformingReplacement:
 		return m.viewPerformingReplacement()
 	case StateReplacementComplete:
@@ -1062,7 +1084,73 @@ func (m Model) renderSearchFooter() string {
 		Padding(0, 1).
 		Width(m.width)
 
-	return helpStyle.Render("j/k: navigate | space: toggle | a: toggle all | v: jump to viewer | enter: replace | esc: cancel")
+	return helpStyle.Render("j/k: navigate | space: toggle | a: toggle all | v/enter: jump to viewer | r: replace | esc: cancel")
+}
+
+func (m Model) viewConfirmReplacement() string {
+	// Count selected instances
+	selectedCount := 0
+	for _, item := range m.resultsList.Items() {
+		if result, ok := item.(SearchResult); ok && result.Included {
+			selectedCount++
+		}
+	}
+
+	// Build confirmation message
+	searchTerm := m.searchInput.Value()
+	replaceTerm := m.replaceInput.Value()
+	if replaceTerm == "" {
+		replaceTerm = "(empty)"
+	}
+
+	// Confirmation box
+	titleStyle := lipgloss.NewStyle().
+		Foreground(m.theme.BrightYellow).
+		Bold(true).
+		Padding(0, 1)
+
+	warningStyle := lipgloss.NewStyle().
+		Foreground(m.theme.BrightRed).
+		Bold(true).
+		Padding(0, 1)
+
+	messageStyle := lipgloss.NewStyle().
+		Foreground(m.theme.Foreground).
+		Padding(0, 1)
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(m.theme.BrightBlack).
+		Padding(0, 1)
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.BrightYellow).
+		Padding(1, 2)
+
+	title := titleStyle.Render("⚠ CONFIRM REPLACEMENT")
+	warning := warningStyle.Render("This action cannot be undone!")
+	message1 := messageStyle.Render(fmt.Sprintf("You are about to replace %d instance(s) of:", selectedCount))
+	message2 := messageStyle.Render(fmt.Sprintf("  '%s'", searchTerm))
+	message3 := messageStyle.Render("with:")
+	message4 := messageStyle.Render(fmt.Sprintf("  '%s'", replaceTerm))
+	help := helpStyle.Render("\ny/enter: Confirm | n/esc: Cancel")
+
+	content := lipgloss.JoinVertical(
+		lipgloss.Left,
+		title,
+		"",
+		warning,
+		"",
+		message1,
+		message2,
+		message3,
+		message4,
+		help,
+	)
+
+	box := boxStyle.Render(content)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 func (m Model) viewPerformingReplacement() string {
