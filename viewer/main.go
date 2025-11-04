@@ -30,30 +30,37 @@ type fileContentMsg struct {
 	content string
 }
 type editorFinishedMsg struct{ err error }
+type jumpMsg struct {
+	path       string
+	lineNum    int
+	searchTerm string
+}
 
 // Model
 type model struct {
-	viewport        viewport.Model
-	currentFile     string
-	content         string
-	ready           bool
-	width           int
-	height          int
-	sessionID       string                 // Session ID for Skate isolation
-	mouseEnabled    bool                   // Toggle for mouse mode
-	showEditorPicker bool                  // Whether to show editor selection UI
+	viewport         viewport.Model
+	currentFile      string
+	content          string
+	ready            bool
+	width            int
+	height           int
+	sessionID        string                 // Session ID for Skate isolation
+	mouseEnabled     bool                   // Toggle for mouse mode
+	showEditorPicker bool                   // Whether to show editor selection UI
 	availableEditors []string              // List of available editors
 	editorCursor     int                    // Selected editor in picker
-	currentTheme    lipglossthemes.Theme   // Current theme from gogh-themes
-	themeName       string                 // Current theme name
-	chromaStyle     *chroma.Style          // Pre-built chroma style for syntax highlighting
+	currentTheme     lipglossthemes.Theme   // Current theme from gogh-themes
+	themeName        string                 // Current theme name
+	chromaStyle      *chroma.Style          // Pre-built chroma style for syntax highlighting
+	highlightedLine  int                    // Line number to highlight (0 = no highlight)
 }
 
 func (m model) Init() tea.Cmd {
-	// Start checking for file and theme changes
+	// Start checking for file, theme, and jump commands
 	return tea.Batch(
 		m.checkTheme(),
 		m.checkFile(),
+		m.checkJump(),
 		pollFile(),
 	)
 }
@@ -161,19 +168,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.themeName = msg.name
 		m.chromaStyle = buildChromaStyle(msg.theme, msg.name)
 
-		// Re-process current file content with new theme colors
+		// Re-process current file content with new theme colors (keep highlight if any)
 		if m.currentFile != "" && m.content != "" {
-			processedContent := processFileContent(m.currentFile, m.content, m.width, m.currentTheme, m.chromaStyle)
+			processedContent := processFileContent(m.currentFile, m.content, m.width, m.currentTheme, m.chromaStyle, m.highlightedLine)
 			m.viewport.SetContent(processedContent)
 		}
 
 		return m, nil
 
 	case fileCheckMsg:
-		// Check for new file selection and theme updates
+		// Check for new file selection, theme updates, and jump commands
 		return m, tea.Batch(
 			m.checkTheme(),
 			m.checkFile(),
+			m.checkJump(),
 			pollFile(), // Continue polling
 		)
 
@@ -195,18 +203,104 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Check if this is a new file (not just a content refresh)
+		isNewFile := msg.path != m.currentFile
+
 		// Update content if file actually changed
 		if msg.path != m.currentFile || (msg.path != "" && msg.content != m.content) {
 			m.currentFile = msg.path
 			m.content = msg.content
 
+			// Clear highlight when switching to a new file
+			// (but keep it when just refreshing the same file)
+			if isNewFile {
+				m.highlightedLine = 0
+			}
+
 			// Process content based on file type using pre-built chroma style
-			processedContent := processFileContent(msg.path, msg.content, m.width, m.currentTheme, m.chromaStyle)
+			processedContent := processFileContent(msg.path, msg.content, m.width, m.currentTheme, m.chromaStyle, m.highlightedLine)
 
 			m.viewport.SetContent(processedContent)
-			m.viewport.GotoTop()
+
+			// Only go to top when switching to a NEW file
+			// Don't go to top when refreshing the same file (e.g., after edit)
+			if isNewFile {
+				m.viewport.GotoTop()
+			}
 		}
 		return m, nil
+
+	case jumpMsg:
+		// Handle jump to specific line in file
+		if msg.path == "" {
+			return m, nil // No jump command
+		}
+
+		// Set the highlighted line
+		m.highlightedLine = msg.lineNum
+
+		// Load file if it's different from current
+		if msg.path != m.currentFile {
+			content := readFileContent(msg.path)
+			m.currentFile = msg.path
+			m.content = content
+		}
+
+		// Always reprocess content with highlighting when jumping
+		processedContent := processFileContent(msg.path, m.content, m.width, m.currentTheme, m.chromaStyle, m.highlightedLine)
+		m.viewport.SetContent(processedContent)
+
+		// Scroll to the target line
+		// lineNum is 1-indexed, but YOffset is 0-indexed
+		targetOffset := msg.lineNum - 1
+		if targetOffset < 0 {
+			targetOffset = 0
+		}
+
+		// Make sure we don't scroll past the end
+		maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if targetOffset > maxOffset {
+			targetOffset = maxOffset
+		}
+
+		// Center the target line in viewport if possible
+		centerOffset := targetOffset - (m.viewport.Height / 2)
+		if centerOffset < 0 {
+			centerOffset = 0
+		}
+		if centerOffset > maxOffset {
+			centerOffset = maxOffset
+		}
+
+		m.viewport.SetYOffset(centerOffset)
+
+		return m, nil
+	}
+
+	// Clear highlight on any scroll/navigation key
+	if m.highlightedLine > 0 {
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			// List of keys that should clear the highlight
+			scrollKeys := map[string]bool{
+				"up": true, "down": true, "left": true, "right": true,
+				"k": true, "j": true, "h": true, "l": true,
+				"pgup": true, "pgdown": true,
+				"home": true, "end": true,
+				"g": true, "G": true,
+			}
+
+			if scrollKeys[keyMsg.String()] {
+				// Clear the highlight and reprocess content
+				m.highlightedLine = 0
+				if m.currentFile != "" && m.content != "" {
+					processedContent := processFileContent(m.currentFile, m.content, m.width, m.currentTheme, m.chromaStyle, 0)
+					m.viewport.SetContent(processedContent)
+				}
+			}
+		}
 	}
 
 	// Update viewport (handles scrolling)
@@ -346,6 +440,53 @@ func (m model) checkFile() tea.Cmd {
 		return fileContentMsg{
 			path:    filePath,
 			content: content,
+		}
+	}
+}
+
+func (m model) checkJump() tea.Cmd {
+	return func() tea.Msg {
+		// Get jump command from Skate
+		key := fmt.Sprintf("vinw-jump@%s", m.sessionID)
+		cmd := exec.Command("skate", "get", key)
+		output, err := cmd.Output()
+		if err != nil {
+			return jumpMsg{} // No jump command
+		}
+
+		jumpCommand := strings.TrimSpace(string(output))
+		if jumpCommand == "" {
+			return jumpMsg{} // Empty command
+		}
+
+		// Parse format: path:lineNum:searchTerm
+		parts := strings.SplitN(jumpCommand, ":", 3)
+		if len(parts) < 2 {
+			return jumpMsg{} // Invalid format
+		}
+
+		path := parts[0]
+		lineNum := 1
+		searchTerm := ""
+
+		// Parse line number
+		if num, err := fmt.Sscanf(parts[1], "%d", &lineNum); err != nil || num != 1 {
+			lineNum = 1
+		}
+
+		// Get search term if present
+		if len(parts) >= 3 {
+			searchTerm = parts[2]
+		}
+
+		// Clear the jump command from Skate so we don't keep jumping
+		clearCmd := exec.Command("skate", "delete", key)
+		clearCmd.Run() // Fire and forget
+
+		return jumpMsg{
+			path:       path,
+			lineNum:    lineNum,
+			searchTerm: searchTerm,
 		}
 	}
 }
@@ -493,7 +634,7 @@ func buildChromaStyle(theme lipglossthemes.Theme, themeName string) *chroma.Styl
 	})
 }
 
-func processFileContent(path string, content string, width int, theme lipglossthemes.Theme, chromaStyle *chroma.Style) string {
+func processFileContent(path string, content string, width int, theme lipglossthemes.Theme, chromaStyle *chroma.Style, highlightedLine int) string {
 	if isCodeFile(path) || isMarkdown(path) {
 		// Syntax highlight code files
 		// Get lexer for the file type
@@ -505,7 +646,7 @@ func processFileContent(path string, content string, width int, theme lipglossth
 		}
 		if lexer == nil {
 			// If no lexer found, just add line numbers
-			return addLineNumbers(content, theme)
+			return addLineNumbers(content, theme, highlightedLine)
 		}
 
 		// Use our dynamically built style with actual theme colors
@@ -517,44 +658,65 @@ func processFileContent(path string, content string, width int, theme lipglossth
 		// Tokenize the content
 		tokens, err := lexer.Tokenise(nil, content)
 		if err != nil {
-			return addLineNumbers(content, theme)
+			return addLineNumbers(content, theme, highlightedLine)
 		}
 
 		// Format the tokens
 		var buf bytes.Buffer
 		err = formatter.Format(&buf, style, tokens)
 		if err != nil {
-			return addLineNumbers(content, theme)
+			return addLineNumbers(content, theme, highlightedLine)
 		}
 
 		// Add line numbers to the highlighted content
 		highlighted := buf.String()
 		if highlighted == "" || highlighted == content {
 			// If no actual highlighting happened, just add line numbers
-			return addLineNumbers(content, theme)
+			return addLineNumbers(content, theme, highlightedLine)
 		}
-		return addLineNumbers(highlighted, theme)
+		return addLineNumbers(highlighted, theme, highlightedLine)
 	}
 
 	// For other files, just return as-is
 	return content
 }
 
-func addLineNumbers(content string, theme lipglossthemes.Theme) string {
+func addLineNumbers(content string, theme lipglossthemes.Theme, highlightedLine int) string {
 	lines := strings.Split(content, "\n")
 	maxLineNum := len(lines)
 	width := len(fmt.Sprintf("%d", maxLineNum))
 
-	// Create line number style from theme
+	// Create line number styles from theme
 	lineNumberStyle := lipgloss.NewStyle().
 		Foreground(theme.BrightBlack).
 		MarginRight(1)
 
+	// Highlighted line number style (brighter)
+	highlightedLineNumberStyle := lipgloss.NewStyle().
+		Foreground(theme.BrightYellow).
+		Bold(true).
+		MarginRight(1)
+
+	// Highlighted line background
+	highlightedLineStyle := lipgloss.NewStyle().
+		Background(theme.BrightBlack)
+
 	var result strings.Builder
 	for i, line := range lines {
-		lineNum := fmt.Sprintf("%*d", width, i+1)
-		result.WriteString(lineNumberStyle.Render(lineNum))
-		result.WriteString(line)
+		currentLineNum := i + 1
+		lineNumStr := fmt.Sprintf("%*d", width, currentLineNum)
+
+		// Check if this is the highlighted line
+		if highlightedLine > 0 && currentLineNum == highlightedLine {
+			// Highlighted line - use bright style and background
+			result.WriteString(highlightedLineNumberStyle.Render(lineNumStr))
+			result.WriteString(highlightedLineStyle.Render(line))
+		} else {
+			// Normal line
+			result.WriteString(lineNumberStyle.Render(lineNumStr))
+			result.WriteString(line)
+		}
+
 		if i < len(lines)-1 {
 			result.WriteString("\n")
 		}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -41,13 +42,15 @@ const (
 
 // SearchResult represents a single match
 type SearchResult struct {
-	Path      string
-	LineNum   int
-	Line      string
-	NewLine   string
-	Included  bool
-	Error     string // For replacement errors
-	Completed bool   // For replacement tracking
+	Path          string
+	LineNum       int
+	Line          string
+	NewLine       string
+	SearchTerm    string // The actual search pattern that matched
+	CaseSensitive bool   // Whether the search was case-sensitive
+	Included      bool
+	Error         string // For replacement errors
+	Completed     bool   // For replacement tracking
 }
 
 // Implement list.Item interface
@@ -74,7 +77,7 @@ type resultItemDelegate struct {
 }
 
 func (d resultItemDelegate) Height() int {
-	return 4 // Path line + old line + new line + blank line
+	return 6 // Estimate: path + ~2 wrapped old lines + ~2 wrapped new lines + blank
 }
 
 func (d resultItemDelegate) Spacing() int {
@@ -100,50 +103,67 @@ func (d resultItemDelegate) Render(w io.Writer, m list.Model, index int, item li
 		checkbox = "[x]"
 	}
 
-	// Truncate long lines to fit screen width
-	maxLineWidth := m.Width() - 10 // Leave some margin
-	if maxLineWidth < 20 {
-		maxLineWidth = 20
+	// Calculate available width for content
+	maxLineWidth := m.Width() - 6 // Leave margin for "  - " prefix
+	if maxLineWidth < 40 {
+		maxLineWidth = 40
 	}
 
-	oldLineText := result.Line
-	if len(oldLineText) > maxLineWidth {
-		oldLineText = oldLineText[:maxLineWidth] + "..."
-	}
-
-	newLineText := result.NewLine
-	if len(newLineText) > maxLineWidth {
-		newLineText = newLineText[:maxLineWidth] + "..."
-	}
-
-	// Base style with background for all items
+	// Base style with subtle background
 	var baseStyle lipgloss.Style
 	if isSelected {
-		baseStyle = lipgloss.NewStyle().Background(d.theme.BrightBlue)
+		// Subtle selection: just slightly lighter than black
+		baseStyle = lipgloss.NewStyle().Background(d.theme.BrightBlack)
 	} else {
 		baseStyle = lipgloss.NewStyle().Background(d.theme.Black)
 	}
 
-	// Line 1: Path with checkbox
+	// Line 1: Path with checkbox and subtle selection indicator
 	pathStyle := baseStyle.Copy().Foreground(d.theme.Foreground)
+	var indicator string
 	if isSelected {
-		pathStyle = pathStyle.Bold(true)
+		// Add a subtle arrow indicator instead of changing the whole background
+		indicator = "› "
+	} else {
+		indicator = "  "
 	}
-	pathLine := pathStyle.Render(fmt.Sprintf("%s %s:%d", checkbox, result.Path, result.LineNum))
+	pathLine := pathStyle.Render(fmt.Sprintf("%s%s %s:%d", indicator, checkbox, result.Path, result.LineNum))
 
-	// Line 2: Old line (red)
+	// Check if there's actually a replacement
+	hasReplacement := result.NewLine != result.Line
+
+	// Wrap and render old line with highlighting (highlight all occurrences of search term)
+	oldWrapped := wrapText(result.Line, maxLineWidth)
+	var oldLines []string
 	oldStyle := baseStyle.Copy().Foreground(d.theme.BrightRed)
-	oldLine := oldStyle.Render(fmt.Sprintf("  - %s", oldLineText))
+	for _, line := range oldWrapped {
+		rendered := highlightAllOccurrences(line, result.SearchTerm, d.theme.BrightRed, d.theme.BrightBlack, result.CaseSensitive)
+		oldLines = append(oldLines, oldStyle.Render("  - ")+rendered)
+	}
 
-	// Line 3: New line (green)
-	newStyle := baseStyle.Copy().Foreground(d.theme.BrightGreen)
-	newLine := newStyle.Render(fmt.Sprintf("  + %s", newLineText))
+	// Only render new line if there's actually a replacement
+	var newLines []string
+	if hasReplacement {
+		newWrapped := wrapText(result.NewLine, maxLineWidth)
+		newStyle := baseStyle.Copy().Foreground(d.theme.BrightGreen)
+		for _, line := range newWrapped {
+			// No highlighting needed on new line - it's the result
+			newLines = append(newLines, newStyle.Render("  + "+line))
+		}
+	}
 
 	// Blank line with background
 	blankLine := baseStyle.Render("")
 
 	// Write all lines
-	fmt.Fprintf(w, "%s\n%s\n%s\n%s\n", pathLine, oldLine, newLine, blankLine)
+	fmt.Fprintf(w, "%s\n", pathLine)
+	for _, line := range oldLines {
+		fmt.Fprintf(w, "%s\n", line)
+	}
+	for _, line := range newLines {
+		fmt.Fprintf(w, "%s\n", line)
+	}
+	fmt.Fprintf(w, "%s\n", blankLine)
 }
 
 // ReplaceStats tracks replacement outcomes
@@ -163,9 +183,11 @@ type Model struct {
 	// Input fields
 	searchInput   textinput.Model
 	replaceInput  textinput.Model
+	includeInput  textinput.Model
+	excludeInput  textinput.Model
 	regexEnabled  bool
 	caseSensitive bool
-	focusedField  int // 0=search, 1=replace
+	focusedField  int // 0=search, 1=replace, 2=include, 3=exclude
 
 	// Search state
 	resultsList      list.Model      // NEW: bubble list component
@@ -181,10 +203,11 @@ type Model struct {
 	stats       ReplaceStats
 
 	// Context
-	rootPath string
-	width    int
-	height   int
-	theme    lipglossthemes.Theme
+	rootPath  string
+	sessionID string
+	width     int
+	height    int
+	theme     lipglossthemes.Theme
 }
 
 // Messages
@@ -204,7 +227,7 @@ type replacementCompleteMsg struct {
 }
 
 // New creates a new find/replace model
-func New(rootPath string, theme lipglossthemes.Theme) Model {
+func New(rootPath string, sessionID string, theme lipglossthemes.Theme) Model {
 	// Search input
 	searchInput := textinput.New()
 	searchInput.Placeholder = "Search pattern..."
@@ -217,6 +240,18 @@ func New(rootPath string, theme lipglossthemes.Theme) Model {
 	replaceInput.Placeholder = "Replacement text..."
 	replaceInput.CharLimit = 500
 	replaceInput.Width = 50
+
+	// Include patterns input
+	includeInput := textinput.New()
+	includeInput.Placeholder = "Include files (e.g., *.go,*.js)..."
+	includeInput.CharLimit = 200
+	includeInput.Width = 50
+
+	// Exclude patterns input
+	excludeInput := textinput.New()
+	excludeInput.Placeholder = "Exclude files (e.g., *_test.go,vendor/*)..."
+	excludeInput.CharLimit = 200
+	excludeInput.Width = 50
 
 	// Spinner for search progress
 	s := spinner.New()
@@ -241,8 +276,11 @@ func New(rootPath string, theme lipglossthemes.Theme) Model {
 		State:        StateInputFields,
 		searchInput:  searchInput,
 		replaceInput: replaceInput,
+		includeInput: includeInput,
+		excludeInput: excludeInput,
 		focusedField: 0,
 		rootPath:     rootPath,
+		sessionID:    sessionID,
 		theme:        theme,
 		spinner:      s,
 		resultsList:  resultsList,
@@ -262,26 +300,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-
-		// Update list dimensions if in results state
-		if m.State == StateSearchResults {
-			// Recalculate based on actual rendered header/footer
-			header := m.renderSearchHeader()
-			footer := m.renderSearchFooter()
-			headerHeight := lipgloss.Height(header)
-			footerHeight := lipgloss.Height(footer)
-
-			// Calculate vertical margins
-			// Add 2 for the newlines we insert between header/list/footer
-			// Add extra buffer for list internal spacing
-			verticalMargins := headerHeight + footerHeight + 2
-			listHeight := m.height - verticalMargins - 10  // Extra buffer
-			if listHeight < 1 {
-				listHeight = 1
-			}
-
-			m.resultsList.SetSize(m.width, listHeight)
-		}
+		m.resizeResultsList() // Resize list if showing results
 
 	case tea.KeyMsg:
 		// Handle special keys first
@@ -295,10 +314,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		// If in input fields state and key wasn't specially handled,
 		// pass to text input
 		if m.State == StateInputFields {
-			if m.focusedField == 0 {
+			switch m.focusedField {
+			case 0:
 				m.searchInput, cmd = m.searchInput.Update(msg)
-			} else {
+			case 1:
 				m.replaceInput, cmd = m.replaceInput.Update(msg)
+			case 2:
+				m.includeInput, cmd = m.includeInput.Update(msg)
+			case 3:
+				m.excludeInput, cmd = m.excludeInput.Update(msg)
 			}
 			cmds = append(cmds, cmd)
 		}
@@ -314,24 +338,19 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				items[i] = r
 			}
 
-			// Set items in list
-			m.resultsList.SetItems(items)
+			// IMPORTANT: Set state FIRST so resizeResultsList() works correctly
 			m.State = StateSearchResults
+			m.resultsList.SetItems(items)
+			m.resizeResultsList() // Size the list to fill available space
 
-			// Resize list for results view
-			header := m.renderSearchHeader()
-			footer := m.renderSearchFooter()
-			headerHeight := lipgloss.Height(header)
-			footerHeight := lipgloss.Height(footer)
-			// Calculate vertical margins
-			// Add 2 for the newlines we insert between header/list/footer
-			// Add extra buffer for list internal spacing
-			verticalMargins := headerHeight + footerHeight + 2
-			listHeight := m.height - verticalMargins - 10  // Extra buffer
-			if listHeight < 1 {
-				listHeight = 1
-			}
-			m.resultsList.SetSize(m.width, listHeight)
+			// CRITICAL: Force list to apply the size by sending it a WindowSizeMsg
+			// The list component needs WindowSizeMsg specifically to update its viewport
+			var cmd tea.Cmd
+			m.resultsList, cmd = m.resultsList.Update(tea.WindowSizeMsg{
+				Width:  m.width,
+				Height: m.height,
+			})
+			cmds = append(cmds, cmd)
 		}
 		// If 0 results, stay in InputFields state - status line will show count
 
@@ -373,17 +392,18 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleInputFieldsKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "tab", "shift+tab":
-		// Toggle focus between search and replace
-		if m.focusedField == 0 {
-			m.focusedField = 1
-			m.searchInput.Blur()
-			m.replaceInput.Focus()
-		} else {
-			m.focusedField = 0
-			m.replaceInput.Blur()
-			m.searchInput.Focus()
-		}
+	case "tab":
+		// Cycle forward through fields: search -> replace -> include -> exclude -> search
+		m.blurAllInputs()
+		m.focusedField = (m.focusedField + 1) % 4
+		m.focusCurrentInput()
+		return m, textinput.Blink
+
+	case "shift+tab":
+		// Cycle backward through fields
+		m.blurAllInputs()
+		m.focusedField = (m.focusedField - 1 + 4) % 4
+		m.focusCurrentInput()
 		return m, textinput.Blink
 
 	case "ctrl+r":
@@ -459,6 +479,18 @@ func (m Model) handleSearchResultsKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.resultsList.SetItems(items)
 
+	case "v":
+		// Jump to this result in the viewer
+		items := m.resultsList.Items()
+		if len(items) > 0 {
+			idx := m.resultsList.Index()
+			if result, ok := items[idx].(SearchResult); ok {
+				// Send jump command to viewer via Skate
+				m.sendJumpToViewer(result)
+			}
+		}
+		return m, nil
+
 	case "enter":
 		// Perform replacement on included items
 		m.State = StatePerformingReplacement
@@ -477,6 +509,26 @@ func (m Model) handleSearchResultsKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 func (m Model) handleResultsKeys(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// Any key exits results screen
 	return m, nil
+}
+
+// sendJumpToViewer sends a jump command to the viewer via Skate
+func (m *Model) sendJumpToViewer(result SearchResult) {
+	// Build full path
+	fullPath := filepath.Join(m.rootPath, result.Path)
+
+	// Format: path:lineNum:searchTerm
+	value := fmt.Sprintf("%s:%d:%s", fullPath, result.LineNum, result.SearchTerm)
+
+	// Write jump command to Skate with session ID
+	jumpKey := fmt.Sprintf("vinw-jump@%s", m.sessionID)
+	jumpCmd := exec.Command("skate", "set", jumpKey, value)
+	jumpCmd.Run() // Fire and forget
+
+	// ALSO update vinw-current-file to keep file selection in sync
+	// This prevents the normal file polling from overriding the jump
+	fileKey := fmt.Sprintf("vinw-current-file@%s", m.sessionID)
+	fileCmd := exec.Command("skate", "set", fileKey, fullPath)
+	fileCmd.Run() // Fire and forget
 }
 
 // performSearch searches for the pattern in all files
@@ -539,6 +591,12 @@ func (m Model) search(pattern string, replacement string) ([]SearchResult, bool,
 
 		// Skip binary files (simple heuristic)
 		if !isTextFile(path) {
+			return nil
+		}
+
+		// Check include/exclude patterns
+		relPath, _ := filepath.Rel(m.rootPath, path)
+		if !m.shouldIncludeFile(relPath) {
 			return nil
 		}
 
@@ -608,11 +666,13 @@ func (m Model) searchInFile(path string, pattern string, replacement string, re 
 		if matched {
 			relPath, _ := filepath.Rel(m.rootPath, path)
 			results = append(results, SearchResult{
-				Path:     relPath,
-				LineNum:  lineNum,
-				Line:     line,
-				NewLine:  newLine,
-				Included: true, // Include by default
+				Path:          relPath,
+				LineNum:       lineNum,
+				Line:          line,
+				NewLine:       newLine,
+				SearchTerm:    pattern,
+				CaseSensitive: m.caseSensitive,
+				Included:      true, // Include by default
 			})
 		}
 	}
@@ -621,6 +681,11 @@ func (m Model) searchInFile(path string, pattern string, replacement string, re 
 }
 
 func caseInsensitiveReplace(s, old, new string) string {
+	// Handle empty pattern - return string unchanged
+	if old == "" {
+		return s
+	}
+
 	// Simple case-insensitive replace
 	lowerOld := strings.ToLower(old)
 
@@ -650,6 +715,64 @@ func isTextFile(path string) bool {
 		".sh": true, ".bash": true, ".zsh": true, ".env": true, ".toml": true,
 	}
 	return textExts[ext]
+}
+
+// parsePatterns parses comma-separated glob patterns
+func parsePatterns(input string) []string {
+	if input == "" {
+		return nil
+	}
+	patterns := strings.Split(input, ",")
+	var result []string
+	for _, p := range patterns {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// matchesAnyPattern checks if path matches any of the glob patterns
+func matchesAnyPattern(path string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+
+	for _, pattern := range patterns {
+		matched, err := filepath.Match(pattern, filepath.Base(path))
+		if err == nil && matched {
+			return true
+		}
+		// Also try matching against full relative path
+		matched, err = filepath.Match(pattern, path)
+		if err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldIncludeFile determines if a file should be searched based on include/exclude patterns
+func (m Model) shouldIncludeFile(relPath string) bool {
+	includePatterns := parsePatterns(m.includeInput.Value())
+	excludePatterns := parsePatterns(m.excludeInput.Value())
+
+	// If include patterns specified, file must match at least one
+	if len(includePatterns) > 0 {
+		if !matchesAnyPattern(relPath, includePatterns) {
+			return false
+		}
+	}
+
+	// If exclude patterns specified, file must not match any
+	if len(excludePatterns) > 0 {
+		if matchesAnyPattern(relPath, excludePatterns) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // performReplacement performs the actual file replacements
@@ -782,9 +905,13 @@ func (m Model) viewInputFields() string {
 	// Input fields
 	searchLabel := "Search:  "
 	replaceLabel := "Replace: "
+	includeLabel := "Include: "
+	excludeLabel := "Exclude: "
 
 	searchLine := searchLabel + m.searchInput.View()
 	replaceLine := replaceLabel + m.replaceInput.View()
+	includeLine := includeLabel + m.includeInput.View()
+	excludeLine := excludeLabel + m.excludeInput.View()
 
 	// Options
 	regexBox := "[ ]"
@@ -827,6 +954,8 @@ func (m Model) viewInputFields() string {
 		"",
 		searchLine,
 		replaceLine,
+		includeLine,
+		excludeLine,
 		"",
 		optionsLine,
 		"",
@@ -846,6 +975,8 @@ func (m Model) viewInputFields() string {
 			header,
 			searchLine,
 			replaceLine,
+			includeLine,
+			excludeLine,
 			optionsLine,
 			statusLine,
 		)
@@ -873,24 +1004,20 @@ func (m Model) viewSearchResults() string {
 	header := m.renderSearchHeader()
 	footer := m.renderSearchFooter()
 
-	// Render the list
+	// Calculate exact height the list should be
+	listHeight := m.calculateListHeight()
+
+	// Render the list and FORCE it to the correct height with lipgloss
+	// Note: The Bubble Tea list component doesn't apply SetSize() immediately,
+	// so we use lipgloss Height() to constrain the output to the correct size
 	listView := m.resultsList.View()
+	listStyle := lipgloss.NewStyle().
+		Height(listHeight).
+		MaxHeight(listHeight)
+	constrainedList := listStyle.Render(listView)
 
-	// Calculate heights
-	headerHeight := lipgloss.Height(header)
-	listHeight := lipgloss.Height(listView)
-	footerHeight := lipgloss.Height(footer)
-
-	// Calculate padding to push footer to bottom
-	usedHeight := headerHeight + listHeight + footerHeight + 2 // +2 for newlines
-	availableLines := m.height - usedHeight
-	if availableLines < 0 {
-		availableLines = 0
-	}
-	padding := strings.Repeat("\n", availableLines)
-
-	// Assemble with padding to push footer to bottom
-	return header + "\n" + listView + padding + "\n" + footer
+	// Clean layout: header, list, footer (maximize list space)
+	return header + "\n" + constrainedList + "\n" + footer
 }
 
 func (m Model) renderSearchHeader() string {
@@ -935,7 +1062,7 @@ func (m Model) renderSearchFooter() string {
 		Padding(0, 1).
 		Width(m.width)
 
-	return helpStyle.Render("j/k: navigate | space: toggle | a: toggle all | enter: replace | esc: cancel")
+	return helpStyle.Render("j/k: navigate | space: toggle | a: toggle all | v: jump to viewer | enter: replace | esc: cancel")
 }
 
 func (m Model) viewPerformingReplacement() string {
@@ -1032,4 +1159,302 @@ func (m Model) countFiles() int {
 		}
 	}
 	return len(fileSet)
+}
+
+// calculateListHeight determines the exact height for the results list
+// to fill the space between header and footer
+func (m Model) calculateListHeight() int {
+	// Render header and footer to get their actual heights
+	header := m.renderSearchHeader()
+	footer := m.renderSearchFooter()
+	headerHeight := lipgloss.Height(header)
+	footerHeight := lipgloss.Height(footer)
+
+	// Calculate available space for list
+	// Give list maximum space - only account for actual newlines in layout
+	listHeight := m.height - headerHeight - footerHeight
+
+	// Ensure minimum height
+	if listHeight < 1 {
+		listHeight = 1
+	}
+
+	return listHeight
+}
+
+// resizeResultsList resizes the results list to fill available space
+// This is the ONLY place list sizing should happen
+func (m *Model) resizeResultsList() {
+	if m.State != StateSearchResults {
+		return
+	}
+	listHeight := m.calculateListHeight()
+	m.resultsList.SetSize(m.width, listHeight)
+}
+
+// blurAllInputs blurs all text input fields
+func (m *Model) blurAllInputs() {
+	m.searchInput.Blur()
+	m.replaceInput.Blur()
+	m.includeInput.Blur()
+	m.excludeInput.Blur()
+}
+
+// focusCurrentInput focuses the currently selected input field
+func (m *Model) focusCurrentInput() {
+	switch m.focusedField {
+	case 0:
+		m.searchInput.Focus()
+	case 1:
+		m.replaceInput.Focus()
+	case 2:
+		m.includeInput.Focus()
+	case 3:
+		m.excludeInput.Focus()
+	}
+}
+
+// wrapText wraps text intelligently at word boundaries
+func wrapText(text string, maxWidth int) []string {
+	if len(text) <= maxWidth {
+		return []string{text}
+	}
+
+	var lines []string
+	var currentLine strings.Builder
+	words := strings.Fields(text)
+
+	for i, word := range words {
+		// Check if adding this word would exceed width
+		testLine := currentLine.String()
+		if testLine != "" {
+			testLine += " "
+		}
+		testLine += word
+
+		if len(testLine) > maxWidth {
+			// If current line has content, save it
+			if currentLine.Len() > 0 {
+				lines = append(lines, currentLine.String())
+				currentLine.Reset()
+			}
+
+			// If word itself is too long, split it
+			if len(word) > maxWidth {
+				for len(word) > maxWidth {
+					lines = append(lines, word[:maxWidth])
+					word = word[maxWidth:]
+				}
+				if len(word) > 0 {
+					currentLine.WriteString(word)
+				}
+			} else {
+				currentLine.WriteString(word)
+			}
+		} else {
+			if currentLine.Len() > 0 {
+				currentLine.WriteString(" ")
+			}
+			currentLine.WriteString(word)
+		}
+
+		// Last word - flush
+		if i == len(words)-1 && currentLine.Len() > 0 {
+			lines = append(lines, currentLine.String())
+		}
+	}
+
+	if len(lines) == 0 {
+		return []string{text}
+	}
+	return lines
+}
+
+// highlightAllOccurrences highlights ALL occurrences of the search term in the line
+func highlightAllOccurrences(lineSegment, searchTerm string, textColor, bgColor lipgloss.Color, caseSensitive bool) string {
+	if searchTerm == "" {
+		return lipgloss.NewStyle().Foreground(textColor).Render(lineSegment)
+	}
+
+	normalStyle := lipgloss.NewStyle().Foreground(textColor)
+	highlightStyle := lipgloss.NewStyle().Foreground(textColor).Background(bgColor)
+
+	// Handle case-insensitive search
+	if !caseSensitive {
+		lowerLine := strings.ToLower(lineSegment)
+		lowerSearch := strings.ToLower(searchTerm)
+
+		if !strings.Contains(lowerLine, lowerSearch) {
+			return normalStyle.Render(lineSegment)
+		}
+
+		// Build result by finding each occurrence in the lowercase version
+		// but rendering the actual case from the original line
+		var result string
+		remaining := lineSegment
+		lowerRemaining := lowerLine
+
+		for {
+			idx := strings.Index(lowerRemaining, lowerSearch)
+			if idx == -1 {
+				result += normalStyle.Render(remaining)
+				break
+			}
+
+			// Add part before match
+			result += normalStyle.Render(remaining[:idx])
+			// Add highlighted match (with original case)
+			result += highlightStyle.Render(remaining[idx : idx+len(searchTerm)])
+			// Continue with remainder
+			remaining = remaining[idx+len(searchTerm):]
+			lowerRemaining = lowerRemaining[idx+len(searchTerm):]
+		}
+
+		return result
+	}
+
+	// Case-sensitive: simple split
+	if !strings.Contains(lineSegment, searchTerm) {
+		return normalStyle.Render(lineSegment)
+	}
+
+	parts := strings.Split(lineSegment, searchTerm)
+	var result string
+	for i, part := range parts {
+		result += normalStyle.Render(part)
+		if i < len(parts)-1 {
+			result += highlightStyle.Render(searchTerm)
+		}
+	}
+
+	return result
+}
+
+// findChangedPortion finds what actually changed between two lines
+// Returns (changedInOld, changedInNew)
+func findChangedPortion(oldLine, newLine string) (string, string) {
+	// Find common prefix
+	minLen := len(oldLine)
+	if len(newLine) < minLen {
+		minLen = len(newLine)
+	}
+
+	prefixLen := 0
+	for prefixLen < minLen && oldLine[prefixLen] == newLine[prefixLen] {
+		prefixLen++
+	}
+
+	// Find common suffix
+	suffixLen := 0
+	for suffixLen < minLen-prefixLen &&
+		oldLine[len(oldLine)-1-suffixLen] == newLine[len(newLine)-1-suffixLen] {
+		suffixLen++
+	}
+
+	// Extract changed portions
+	changedInOld := ""
+	if prefixLen < len(oldLine)-suffixLen {
+		changedInOld = oldLine[prefixLen : len(oldLine)-suffixLen]
+	}
+
+	changedInNew := ""
+	if prefixLen < len(newLine)-suffixLen {
+		changedInNew = newLine[prefixLen : len(newLine)-suffixLen]
+	}
+
+	return changedInOld, changedInNew
+}
+
+// highlightChangedInLine highlights ALL occurrences of the changed portion in this line segment
+func highlightChangedInLine(lineSegment, changedPortion string, textColor, bgColor lipgloss.Color) string {
+	// If no changed portion or it's not in this segment, just return plain
+	if changedPortion == "" || !strings.Contains(lineSegment, changedPortion) {
+		return lipgloss.NewStyle().Foreground(textColor).Render(lineSegment)
+	}
+
+	normalStyle := lipgloss.NewStyle().Foreground(textColor)
+	highlightStyle := lipgloss.NewStyle().Foreground(textColor).Background(bgColor)
+
+	// Highlight ALL occurrences by splitting on the changed portion
+	parts := strings.Split(lineSegment, changedPortion)
+	if len(parts) == 1 {
+		// Shouldn't happen since we checked Contains above, but safety check
+		return normalStyle.Render(lineSegment)
+	}
+
+	// Build result with highlighted occurrences
+	var result string
+	for i, part := range parts {
+		result += normalStyle.Render(part)
+		// Add highlighted changed portion between parts (but not after the last part)
+		if i < len(parts)-1 {
+			result += highlightStyle.Render(changedPortion)
+		}
+	}
+
+	return result
+}
+
+// highlightMatches highlights the changed portion in a line using theme colors
+// textColor: main color for the line (BrightRed or BrightGreen)
+// highlightBg: background color for highlighted part (Red or Green)
+// isOld: true for old line, false for new line
+func highlightMatches(line, oldLine, newLine string, textColor, highlightBg lipgloss.Color, isOld bool) string {
+	// If lines are identical, no highlighting needed
+	if oldLine == newLine {
+		return lipgloss.NewStyle().Foreground(textColor).Render(line)
+	}
+
+	// Find the common prefix and suffix
+	minLen := len(oldLine)
+	if len(newLine) < minLen {
+		minLen = len(newLine)
+	}
+
+	prefixLen := 0
+	for prefixLen < minLen && oldLine[prefixLen] == newLine[prefixLen] {
+		prefixLen++
+	}
+
+	suffixLen := 0
+	for suffixLen < minLen-prefixLen &&
+		oldLine[len(oldLine)-1-suffixLen] == newLine[len(newLine)-1-suffixLen] {
+		suffixLen++
+	}
+
+	// Extract the changed part from the line we're highlighting
+	var changedPart string
+
+	if isOld {
+		// Highlighting the old line - show what will be removed
+		if prefixLen < len(oldLine)-suffixLen {
+			changedPart = oldLine[prefixLen : len(oldLine)-suffixLen]
+		}
+	} else {
+		// Highlighting the new line - show what will be added
+		if prefixLen < len(newLine)-suffixLen {
+			changedPart = newLine[prefixLen : len(newLine)-suffixLen]
+		}
+	}
+
+	// Build the styled output
+	if changedPart != "" && strings.Contains(line, changedPart) {
+		parts := strings.SplitN(line, changedPart, 2)
+		if len(parts) == 2 {
+			// Normal style for unchanged parts
+			normalStyle := lipgloss.NewStyle().Foreground(textColor)
+
+			// Subtle highlight for changed part - inverse colors
+			highlightStyle := lipgloss.NewStyle().
+				Foreground(textColor).
+				Background(highlightBg)
+
+			return normalStyle.Render(parts[0]) +
+				highlightStyle.Render(changedPart) +
+				normalStyle.Render(parts[1])
+		}
+	}
+
+	// Fallback: just color the whole line
+	return lipgloss.NewStyle().Foreground(textColor).Render(line)
 }

@@ -395,7 +395,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "F":
 			// Enter find/replace mode
 			m.findReplaceMode = true
-			m.findReplaceModel = findreplace.New(m.rootPath, m.theme.Current)
+			m.findReplaceModel = findreplace.New(m.rootPath, m.sessionID, m.theme.Current)
 			// Return both WindowSizeMsg and Init commands
 			return m, tea.Batch(
 				func() tea.Msg {
