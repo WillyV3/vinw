@@ -24,20 +24,12 @@
 - **File & directory creation** - Create files (`a`) and directories (`A`) directly from the tree
 - **Dual-terminal preview** - Separate viewer with syntax highlighting and markdown rendering
 - **Session isolation** - Run multiple instances in different directories simultaneously
-- **8 color themes** - Synchronized between tree and viewer
+- **Find and Replace** - Tried to make this like VScode - Tested using property-based testing library with iver 450 different replacements.
+  - Navigate to selected snippet while in Find Mode -
 
-### Navigation & Viewing
-- **Directory nesting toggle** - Toggle full tree nesting on/off (`n`)
-- **Smart directory expansion** - Expand/collapse individual directories with `←`/`→` arrow keys
-- **Hidden files toggle** - Show/hide dotfiles and hidden folders (`h`)
-- **Gitignore support** - Respect or ignore `.gitignore` patterns (`i`)
-- **Vim-style navigation** - `j`/`k` keys for tree navigation
-- **Mouse toggle** - Switch between scrolling and text selection modes (viewer only)
+<img width="1958" height="693" alt="image" src="https://github.com/user-attachments/assets/04e3491a-75e6-44c9-8969-264ba0bb927e" />
 
-### Performance & Integration
-- **Fast performance** - Optimized tree caching for large repositories
-- **GitHub integration** - Automatic repository creation and management
-- **Smart file selection** - Space or Enter to select files for viewing
+
 
 ## Installation
 
