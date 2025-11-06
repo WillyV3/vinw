@@ -8,9 +8,10 @@
 [![Homebrew](https://img.shields.io/badge/Homebrew-Install-FBB040?style=flat&logo=homebrew)](https://brew.sh/)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat)](LICENSE)
 
-**A fast, interactive file tree viewer with real-time git tracking, file creation, and dual-terminal preview.**
+**A fast, interactive file tree with dual-terminal viewer.**
+**Everything you need to start making the switch to the terminal, without losing the convenience of a full-featured file-tree.**
 
-<img width="1512" height="953" alt="Screenshot 2025-10-04 at 9 43 27 AM" src="https://github.com/user-attachments/assets/990922f7-0363-4f3a-8f35-7977e2fff8c9" />
+<img width="2422" height="1440" alt="image" src="https://github.com/user-attachments/assets/8fe9e43c-2076-4135-b041-31ec4b6e9e47" />
 
 </div>
 
@@ -28,6 +29,10 @@
   - Navigate to selected snippet while in Find Mode -
 
 <img width="1958" height="693" alt="image" src="https://github.com/user-attachments/assets/04e3491a-75e6-44c9-8969-264ba0bb927e" />
+
+**Theme Selection Menu**
+
+<img width="559" height="513" alt="image" src="https://github.com/user-attachments/assets/7f9ded19-97e1-4f01-8c52-1b667aec39f2" />
 
 
 
