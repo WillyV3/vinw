@@ -154,7 +154,7 @@ make run-viewer   # Run viewer
 
 ## Architecture
 
-vinw is built with:
+vinw is built completely within the Charmbracelet ecosystem:
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - Terminal UI framework
 - [Lipgloss](https://github.com/charmbracelet/lipgloss) - Styling and layout
 - [Glamour](https://github.com/charmbracelet/glamour) - Markdown rendering
