@@ -15,7 +15,7 @@
 </div>
 
 "This tool is pretty sick though. you're not going to convert many emacs or vim users but I suspect there are a new crop of Claude Code-oriented devs who will give the willy stack a whirl."
-Staff Engineer 
+-User (Staff engineer) 
 
 ## Features
 
