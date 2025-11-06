@@ -10,9 +10,12 @@
 
 **A fast, interactive file tree viewer with real-time git tracking, file creation, and dual-terminal preview.**
 
-![Demo]<img width="1512" height="953" alt="Screenshot 2025-10-04 at 9 43 27 AM" src="https://github.com/user-attachments/assets/990922f7-0363-4f3a-8f35-7977e2fff8c9" />
+<img width="1512" height="953" alt="Screenshot 2025-10-04 at 9 43 27 AM" src="https://github.com/user-attachments/assets/990922f7-0363-4f3a-8f35-7977e2fff8c9" />
 
 </div>
+
+"This tool is pretty sick though. you're not going to convert many emacs or vim users but I suspect there are a new crop of Claude Code-oriented devs who will give the willy stack a whirl."
+Staff Engineer 
 
 ## Features
 
